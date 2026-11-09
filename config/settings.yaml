@@ -1,0 +1,38 @@
+# General behaviour of the Escalator Agent. All timings are configurable (SRS FR-04, NFR-04).
+
+agent:
+  team_name: "Network Optimization Team"
+  # Appended to every outgoing email.
+  signature: |
+    Regards,
+    Network Optimization Team
+  # How often `python main.py run` checks the inbox and ticket rules.
+  poll_interval_minutes: 5
+  # How Remedy ticket numbers look in emails. Matches TT-100234, TT100234, tt-100234.
+  ticket_id_pattern: '\bTT-?\s?(\d{6})\b'
+  # Below this AI confidence, an email is flagged for human review instead of auto-drafting.
+  min_confidence: 0.6
+
+tickets:
+  # Fake Remedy data for the POC. Regenerate with: python main.py seed
+  file: data/fake_tickets.json
+  # Ticket statuses that mean "stop following up".
+  closed_statuses: ["Closed"]
+
+followup:
+  # Send a follow-up if there has been no activity on the ticket for this many hours.
+  no_update_hours: { Critical: 2, High: 8, Medium: 24, Low: 48 }
+  # Send a one-time reminder when the SLA deadline is this close (hours).
+  reminder_before_sla_hours: { Critical: 1, High: 4, Medium: 8, Low: 12 }
+  # Never send two automated emails on the same ticket closer together than this.
+  min_hours_between_followups: 4
+  # After an escalation, wait this long before escalating to the next level.
+  escalation_repeat_hours: 12
+  # Highest escalation level defined in escalation.yaml.
+  max_escalation_level: 3
+  # A "Resolved" ticket not closed after this many hours gets a closure-check email.
+  resolved_not_closed_hours: 24
+
+history:
+  # How many previous emails on a ticket are given to the AI as context.
+  max_emails_in_prompt: 6

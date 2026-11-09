@@ -1,0 +1,21 @@
+# Escalation recipients (SRS FR-09).
+#
+# SAFETY RULE: the agent only ever sends email to addresses listed in this file.
+# Addresses that appear inside incoming emails are never used as recipients.
+#
+# For the POC, replace these with your test accounts. It is fine for several
+# levels to point at the same test address.
+
+assignment_groups:
+  Back Office RF:
+    level_1: ["areebmanzoor314@gmail.com"]   # the assigned Back Office team
+    level_2: ["areebmanzoor314@gmail.com"]      # team lead
+    level_3: ["areebmanzoor314@gmail.com"]   # manager
+
+  Back Office Transmission:
+    level_1: ["areebmanzoor314@gmail.com"]
+    level_2: ["areebmanzoor314@gmail.com"]
+    level_3: ["areebmanzoor314@gmail.com"]
+
+# Used when a ticket's assignment group is not listed above.
+default_group: Back Office RF

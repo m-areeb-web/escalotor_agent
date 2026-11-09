@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/escalator.db
+data/mock_outbox.jsonl
+data/.msal_token_cache.json
+.pytest_cache/
