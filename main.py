@@ -54,6 +54,21 @@ def seed(cfg) -> None:
     print(f"Created {len(samples)} sample emails in data/mock_inbox.json (used when EMAIL_PROVIDER=mock)")
     print("Database reset.")
 
+    if cfg.email_provider != "mock":
+        # Start fresh: mark everything already in the mailbox as seen, so only emails that
+        # arrive after this point are processed. Nothing is deleted from the mailbox.
+        from src.email_client import get_email_client
+        from src.storage import Storage
+
+        store = Storage(cfg.db_path)
+        existing = get_email_client(cfg).fetch_recent()
+        for msg in existing:
+            store.save_email(message_id=msg["id"], direction="in", sender=msg["sender"], recipients=msg["to"],
+                             cc=msg["cc"], subject=msg["subject"], body="", received_at=msg["received_at"],
+                             status="ignored", review_reason="Already in mailbox before reset")
+        store.audit("agent", "fresh_start", existing_emails_skipped=len(existing))
+        print(f"Marked {len(existing)} existing {cfg.email_provider} emails as already seen (not deleted).")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI Escalator Agent POC")

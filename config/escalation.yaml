@@ -8,12 +8,12 @@
 
 assignment_groups:
   Back Office RF:
-    level_1: ["areebmanzoor314@gmail.com"]   # the assigned Back Office team
+    level_1: ["areebmanzoor314@gmail.com", "itsbossgg@gmail.com"]   # the assigned Back Office team
     level_2: ["areebmanzoor314@gmail.com"]      # team lead
     level_3: ["areebmanzoor314@gmail.com"]   # manager
 
   Back Office Transmission:
-    level_1: ["areebmanzoor314@gmail.com"]
+    level_1: ["areebmanzoor314@gmail.com", "itsbossgg@gmail.com"]
     level_2: ["areebmanzoor314@gmail.com"]
     level_3: ["areebmanzoor314@gmail.com"]
 
