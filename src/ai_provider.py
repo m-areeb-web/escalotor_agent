@@ -151,6 +151,22 @@ class RulesProvider:
                     f"SLA due: {t.get('sla_due')}"
                 ),
             }
+        if task == "identify":
+            email, tickets = ctx.get("email", {}), ctx.get("tickets", [])
+            text = f"{email.get('subject', '')}\n{email.get('body', '')}"
+            refs = [m.group(0).strip() for m in re.finditer(
+                r"(?i)\b(?:tt|ticket|inc|incident)\s*(?:no\.?|number|num|#)?\s*[-:#]?\s*\d{1,12}\b", text)]
+            matched, basis = None, "none"
+            for t in tickets:
+                digits = re.sub(r"\D", "", t["tt_number"])
+                if any(re.sub(r"\D", "", r) == digits for r in refs):
+                    matched, basis = t["tt_number"], "number"
+                    break
+                if any(x and x.lower() in text.lower() for x in (t.get("cell_id"), t.get("site_id"))):
+                    matched, basis = t["tt_number"], "site_or_cell"
+            related = bool(refs or matched or re.search(r"(?i)\b(ticket|working on it|issue)\b", text))
+            return {"is_ticket_related": related, "ticket_references": refs, "matched_ticket": matched,
+                    "match_basis": basis, "confidence": 0.8 if matched else 0.5, "reason": "keyword rules"}
         raise AIError(f"Unknown task {task}")
 
 

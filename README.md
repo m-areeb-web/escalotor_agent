@@ -70,6 +70,19 @@ Simulate Back Office progress by editing `data/fake_tickets.json` (e.g. set a st
 
 ## 5. Run the agent
 
+Easiest: one script does every step (environment check, Outlook sign-in, start, open browser):
+
+```bash
+./run.sh           # start (keeps drafts and history)
+./run.sh fresh     # reset fake tickets + database, then start
+./run.sh test      # run all tests
+./run.sh stop      # stop the agent
+```
+
+macOS uses port 5000 for AirPlay, so the page may open on http://127.0.0.1:5001 instead.
+
+Or by hand:
+
 ```bash
 .venv/bin/python main.py start   # everything in one window; open http://127.0.0.1:5000
 ```

@@ -208,6 +208,33 @@ class Storage:
         history = [_email_row(r) for r in rows]
         return history[-limit:] if limit else history
 
+    def inbox_emails(self, limit: int = 200) -> list[dict]:
+        """Every received email the agent looked at (newest first), except the ones that were
+        already in the mailbox before a fresh start."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT e.*, (SELECT COUNT(*) FROM drafts d WHERE d.source_email_id = e.id) AS draft_count "
+                "FROM emails e WHERE direction='in' AND COALESCE(review_reason,'') != 'Already in mailbox before reset' "
+                "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        out = []
+        for r in rows:
+            d = _email_row(r)
+            d["draft_count"] = r["draft_count"]
+            out.append(d)
+        return out
+
+    def sent_messages(self, limit: int = 100) -> list[dict]:
+        """Everything we sent (newest first), with the received email it answered, if any."""
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM drafts WHERE status='sent' ORDER BY decided_at DESC, id DESC LIMIT ?",
+                             (limit,)).fetchall()
+        out = []
+        for r in rows:
+            d = _draft_row(r)
+            d["source"] = self.get_email(d["source_email_id"]) if d["source_email_id"] else None
+            out.append(d)
+        return out
+
     def emails_needing_review(self) -> list[dict]:
         with self._conn() as c:
             rows = c.execute("SELECT * FROM emails WHERE status='needs_review' ORDER BY id DESC").fetchall()

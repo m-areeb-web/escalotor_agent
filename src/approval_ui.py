@@ -59,12 +59,15 @@ BASE = """<!doctype html>
  .newbar[hidden] { display:none } .newbar a { color:inherit; font-weight:600 }
 </style></head><body>
 <header><a href="{{ url_for('index') }}">AI Escalator Agent</a>
- <a href="{{ url_for('tickets') }}">Tickets</a><a href="{{ url_for('sla') }}">SLA matrix</a><a href="{{ url_for('audit') }}">Audit log</a><span class="sp"></span>
+ <a href="{{ url_for('inbox') }}">Inbox</a><a href="{{ url_for('tickets') }}">Tickets</a><a href="{{ url_for('sla') }}">SLA matrix</a><a href="{{ url_for('audit') }}">Audit log</a><span class="sp"></span>
  <form method="post" action="{{ url_for('run_inbox') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button>Check inbox</button></form>
  <form method="post" action="{{ url_for('run_followups') }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button>Run follow-up rules</button></form>
  <span class="muted">AI: {{ cfg.ai_provider }} · Email: {{ cfg.email_provider }}</span>
  <span id="live" class="live"><span class="dot"></span><span id="live-text">Connecting…</span></span></header>
 <main>
+{% if demo_mode %}<div class="warn" style="margin-bottom:12px"><b>Demo mode is ON:</b> replies can go to any sender who
+ emails about a ticket, not only the contacts in escalation.yaml. Escalations still go only to listed contacts.
+ Turn off with <code>demo_reply_to_any_sender: false</code> in config/settings.yaml before real use.</div>{% endif %}
 {% with msgs = get_flashed_messages(with_categories=true) %}{% for cat, m in msgs %}<div class="flash {{cat}}">{{ m }}</div>{% endfor %}{% endwith %}
 <div id="fetchbar" class="fetchbar" hidden><div class="spin"></div>
  <div><b id="fetch-title">Fetching new emails…</b><div class="muted" id="fetch-detail"></div></div></div>
@@ -129,14 +132,19 @@ BASE = """<!doctype html>
 INDEX = """
 <div class="card stats">
  <div class="stat"><b>{{ stats.pending }}</b><span class="muted">Drafts awaiting approval</span></div>
- <div class="stat"><b>{{ review|length }}</b><span class="muted">Emails flagged for review</span></div>
+ <div class="stat"><b>{{ review|length }}</b><span class="muted">Emails needing a decision</span></div>
  <div class="stat"><b>{{ stats.sent }}</b><span class="muted">Emails sent</span></div>
  <div class="stat"><b>{{ waiting_ai }}</b><span class="muted">Waiting for AI (retried automatically)</span></div>
  <div class="stat"><b>{{ stats.approved_without_edits_pct if stats.approved_without_edits_pct is not none else '–' }}{% if stats.approved_without_edits_pct is not none %}%{% endif %}</b>
    <span class="muted">Sent without edits (evidence for auto-send)</span></div>
 </div>
 
-<h2>Drafts awaiting approval</h2>
+<div class="row" style="justify-content:space-between;margin:20px 0 12px">
+ <h2 style="margin:0">Drafts awaiting approval</h2>
+ {% if drafts %}<form method="post" action="{{ url_for('clear_drafts') }}"
+   onsubmit="return confirm('Remove all {{ drafts|length }} waiting drafts? Nothing will be sent. Automated follow-ups for these tickets pause for 12 hours.');">
+  <input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="danger">Clear all drafts ({{ drafts|length }})</button></form>{% endif %}
+</div>
 {% for d in drafts %}
 <div class="card">
  <div class="row"><b><a href="{{ url_for('ticket', tt=d.tt_number) }}">{{ d.tt_number }}</a></b>
@@ -159,7 +167,7 @@ INDEX = """
 </div>
 {% else %}<div class="card muted">No drafts waiting. New emails are picked up automatically.</div>{% endfor %}
 
-<h2>Emails flagged for human review</h2>
+<h2>Emails needing a decision</h2>
 {% for e in review %}
 <div class="card">
  <div class="row"><b>{{ e.tt_number or 'No ticket' }}</b><span class="pill">{{ e.intent or 'unknown' }}</span>
@@ -173,7 +181,26 @@ INDEX = """
  {% else %}<form method="post" action="{{ url_for('manual_reply', email_id=e.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="primary">Write reply</button></form>{% endif %}
  <form method="post" action="{{ url_for('reviewed', email_id=e.id) }}"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button>Mark as reviewed</button></form></div>
 </div>
-{% else %}<div class="card muted">Nothing flagged.</div>{% endfor %}
+{% else %}<div class="card muted">Nothing needs a decision.</div>{% endfor %}
+
+<h2>Replied emails</h2>
+{% for s in sent %}
+<div class="card">
+ <div class="row"><span class="pill" style="color:var(--good)">Sent</span>
+  <b>{% if s.tt_number and s.tt_number != '-' %}<a href="{{ url_for('ticket', tt=s.tt_number) }}">{{ s.tt_number }}</a>{% else %}No ticket{% endif %}</b>
+  <span class="pill">{{ kind_names.get(s.kind, s.kind) }}</span>
+  <span class="muted">to <b>{{ s.to_addrs|join(', ') }}</b>{% if s.cc_addrs %} · cc {{ s.cc_addrs|join(', ') }}{% endif %}
+   · {{ (s.decided_at or '')[:16].replace('T', ' ') }} UTC</span></div>
+ {% if s.source %}<div class="muted" style="margin-top:6px">In reply to “{{ s.source.subject }}” from {{ s.source.sender }}
+   ({{ (s.source.received_at or '')[:16].replace('T', ' ') }} UTC)</div>{% endif %}
+ <details style="margin-top:8px"><summary>What we replied</summary><pre>{{ s.subject }}
+
+{{ s.body }}</pre></details>
+ {% if s.source %}<details><summary>Their original email</summary><pre>{{ s.source.subject }}
+
+{{ s.source.body }}</pre></details>{% endif %}
+</div>
+{% else %}<div class="card muted">Nothing sent yet. Approved drafts appear here.</div>{% endfor %}
 """
 
 TICKETS = """
@@ -224,6 +251,30 @@ changed in <code>config/settings.yaml</code> (section <code>sla_matrix</code>); 
 </ul></div>
 """
 
+KIND_NAMES = {"reply": "Reply", "manual": "Reply written by a person", "ask_ticket": "Asked which ticket",
+              "followup": "Follow-up", "reminder": "SLA reminder", "escalation": "Escalation",
+              "closure_check": "Closure check"}
+
+INBOX = """
+<h2>Inbox</h2>
+<p class="muted">Every email the agent received since the last fresh start, and what it did with it.
+Only emails that mention a ticket number like <b>TT-100234</b> are handled; others are ignored.</p>
+<div class="card tablewrap"><table>
+<tr><th>Received (UTC)</th><th>From</th><th>Subject</th><th>Ticket</th><th>What the agent did</th></tr>
+{% for e in emails %}<tr>
+<td class="muted">{{ e.received_at[:16].replace('T', ' ') }}</td><td>{{ e.sender }}</td><td>{{ e.subject }}</td>
+<td>{% if e.tt_number %}<a href="{{ url_for('ticket', tt=e.tt_number) }}">{{ e.tt_number }}</a>{% else %}–{% endif %}</td>
+<td>{% if e.draft_count %}<span class="pill" style="color:var(--good)">Reply draft created</span>
+{% elif e.status == 'needs_review' %}<span class="pill" style="color:var(--bad)">Flagged for review</span>
+{% elif e.status == 'reviewed' %}<span class="pill">Reviewed by a person</span>
+{% elif e.status == 'ai_retry' %}<span class="pill">Waiting for AI</span>
+{% elif e.status == 'ignored' %}<span class="pill">Ignored</span>
+{% else %}<span class="pill">Read{% if e.intent %} ({{ e.intent }}){% endif %}, no reply needed</span>{% endif %}
+{% if e.review_reason %}<div class="muted">{{ e.review_reason }}</div>{% endif %}</td></tr>
+{% else %}<tr><td colspan="5" class="muted">No emails received yet. Send one to the team mailbox.</td></tr>{% endfor %}
+</table></div>
+"""
+
 AUDIT = """
 <h2>Audit log</h2><div class="card tablewrap"><table><tr><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>TT</th><th>Details</th></tr>
 {% for a in audit %}<tr><td class="muted">{{ a.ts }}</td><td>{{ a.actor }}</td><td>{{ a.action }}</td><td>{{ a.tt_number or '' }}</td><td class="muted">{{ a.details }}</td></tr>{% endfor %}
@@ -261,8 +312,10 @@ def create_app(cfg: Config, agent: Agent | None = None, watch: bool = True) -> F
         watcher.disabled("Background checks are off")
 
     def page(template: str, **ctx) -> str:
+        ctx.setdefault("kind_names", KIND_NAMES)
         content = render_template_string(template, **ctx)
-        return render_template_string(BASE, content=content, cfg=cfg, watch_version=watcher.status()["version"])
+        return render_template_string(BASE, content=content, cfg=cfg, watch_version=watcher.status()["version"],
+                                      demo_mode=agent.demo_mode)
 
     def split(value: str) -> list[str]:
         return [a.strip() for a in (value or "").replace(";", ",").split(",") if a.strip()]
@@ -272,9 +325,10 @@ def create_app(cfg: Config, agent: Agent | None = None, watch: bool = True) -> F
         drafts = agent.store.drafts(status="pending")
         for d in drafts:
             d["source"] = agent.store.get_email(d["source_email_id"]) if d["source_email_id"] else None
-        review = agent.store.emails_needing_review()
-        has_draft = {e["id"] for e in review if agent.store.has_draft_for_email(e["id"])}
-        return page(INDEX, drafts=drafts, review=review, has_draft=has_draft,
+        # Flagged list = only emails that still need a decision. Emails that already have a draft
+        # (waiting above) or were answered (listed under "Replied emails") are not repeated here.
+        review = [e for e in agent.store.emails_needing_review() if not agent.store.has_draft_for_email(e["id"])]
+        return page(INDEX, drafts=drafts, review=review, has_draft=set(), sent=agent.store.sent_messages(),
                     stats=agent.store.approval_stats(), waiting_ai=agent.store.count_waiting_for_ai())
 
     @app.get("/tickets")
@@ -297,6 +351,10 @@ def create_app(cfg: Config, agent: Agent | None = None, watch: bool = True) -> F
     @app.get("/status")
     def status():
         return jsonify(watcher.status())
+
+    @app.get("/inbox")
+    def inbox():
+        return page(INBOX, emails=agent.store.inbox_emails())
 
     @app.get("/audit")
     def audit():
@@ -337,6 +395,13 @@ def create_app(cfg: Config, agent: Agent | None = None, watch: bool = True) -> F
             flash(f"Reply draft {draft_id} created. Write your message below and approve it.", "ok")
         except Exception as e:
             flash(f"Could not create reply: {e}", "error")
+        return redirect(url_for("index"))
+
+    @app.post("/drafts/clear")
+    def clear_drafts():
+        with lock:
+            n = agent.clear_pending_drafts()
+        flash(f"Cleared {n} draft{'s' if n != 1 else ''}. Nothing was sent." if n else "No drafts to clear.", "ok")
         return redirect(url_for("index"))
 
     @app.post("/run/inbox")

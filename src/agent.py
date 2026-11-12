@@ -17,6 +17,7 @@ from .config import Config
 from .email_client import EmailError, get_email_client
 from .email_text import clean_body
 from .responder import draft_email
+from .ticket_finder import identify_ticket
 from .sla import is_closed, sla_deadline, sla_row
 from .storage import AUTO_KINDS, Storage
 from .ticket_source import get_ticket_source
@@ -49,6 +50,13 @@ class Agent:
         self.email = email or get_email_client(cfg)
         self.tickets = tickets or get_ticket_source(cfg)
         self.allowed = cfg.allowed_recipients()
+        # DEMO MODE (settings.yaml agent.demo_reply_to_any_sender): anyone who emails about a ticket is
+        # treated like the Back Office, and replies may go back to that sender. Escalations still only
+        # go to escalation.yaml contacts. Switch off before real use (SRS rule).
+        self.demo_mode = bool(cfg.settings["agent"].get("demo_reply_to_any_sender", False))
+
+    def _trusted_sender(self, sender: str) -> bool:
+        return sender in self.allowed or (self.demo_mode and bool(sender))
 
     @property
     def ai(self):
@@ -181,19 +189,23 @@ class Agent:
         thread_tt = self.store.ticket_for_conversation(msg.get("conversation_id"))
         if not tts and thread_tt:
             tts = [thread_tt]       # reply in a known ticket thread without the number in it
+        reasons = []
         if not tts:
-            self._store_inbound(msg, email_id, status="ignored", review_reason="No ticket number found")
-            self.store.audit("agent", "email_ignored", subject=msg["subject"], reason="no ticket number")
-            return "ignored"
+            # No standard ticket number: let the AI decide whether (and which) ticket is meant.
+            found = self._identify_with_ai(msg, email_id, attempts)
+            if isinstance(found, str):          # final outcome (ignored / flagged / retry)
+                return found
+            tt, note = found
+            tts = [tt]
+            reasons.append(note)
 
         tt = tts[0]
         ticket = self.tickets.get(tt)
-        reasons = []
         if len(tts) > 1:
             reasons.append(f"Email mentions several tickets ({', '.join(tts)}); matched to {tt}")
         if ticket is None:
             reasons.append(f"{tt} not found in Remedy")
-        if msg["sender"] not in self.allowed:
+        if not self._trusted_sender(msg["sender"]):
             reasons.append(f"Sender {msg['sender']} is not in the escalation list")
         elif ticket is not None:
             # A reply from the Back Office counts as activity on the ticket (resets the quiet timer).
@@ -221,7 +233,7 @@ class Agent:
         # Decide whether to draft a reply.
         intent = result.get("intent")
         suspicious = review_reason and "suspicious" in review_reason.lower()
-        unknown_sender = msg["sender"] not in self.allowed   # a person decides whether to answer
+        unknown_sender = not self._trusted_sender(msg["sender"])   # a person decides whether to answer
         if ticket is None or suspicious or unknown_sender or intent is None or intent in NO_REPLY_INTENTS:
             email_id = self._store_inbound(msg, email_id, **record)
             self._audit_classified(tt, email_id, result, review_reason)
@@ -246,7 +258,9 @@ class Agent:
         email_id = self._store_inbound(msg, email_id, **record)
         self._audit_classified(tt, email_id, result, review_reason)
         to = [msg["sender"]]
-        notes = [n for n in [review_reason, *draft["warnings"]] if n]
+        demo_note = (f"Demo mode: {msg['sender']} is not in escalation.yaml; replying to them anyway"
+                     if msg["sender"] not in self.allowed else None)
+        notes = [n for n in [review_reason, demo_note, *draft["warnings"]] if n]
         draft_id = self.store.create_draft(
             tt_number=tt, kind="reply", level=1, to_addrs=to, cc_addrs=[], subject=draft["subject"],
             body=draft["body"], reply_to_message_id=msg["id"], source_email_id=email_id,
@@ -254,6 +268,65 @@ class Agent:
         )
         self.store.audit("agent", "draft_created", tt, draft_id=draft_id, kind="reply", intent=intent)
         return "flagged" if review_reason else "drafts"
+
+    _NO_REPLY_SENDER = re.compile(r"^(no-?reply|do-?not-?reply|notifications?|newsletter|news|marketing)[\w.+-]*@|"
+                                  r"@(accountprotection\.microsoft\.com|email\.microsoft\.com)$", re.IGNORECASE)
+
+    def _identify_with_ai(self, msg: dict, email_id: int | None, attempts: int):
+        """Returns (ticket_number, note) when the AI finds the ticket, otherwise the final outcome."""
+        def ignore(reason: str) -> str:
+            self._store_inbound(msg, email_id, status="ignored", review_reason=reason, retry_after=None)
+            self.store.audit("agent", "email_ignored", subject=msg["subject"], reason=reason)
+            return "ignored"
+
+        if not self.cfg.settings["agent"].get("ai_ticket_detection", True):
+            return ignore("No ticket number found")
+        if self._NO_REPLY_SENDER.search(msg["sender"] or ""):
+            return ignore("Automated sender (no-reply / notifications), no ticket number")
+        try:
+            r = identify_ticket(self.ai, msg, self.tickets.list_open(), self.cfg.settings["agent"]["min_confidence"])
+        except AIError as e:
+            outcome, attempts = self._ai_failed(msg, email_id, attempts, None, str(e), "ticket identification")
+            if outcome:
+                return outcome
+            self._store_inbound(msg, email_id, status="needs_review", ai_attempts=attempts, retry_after=None,
+                                review_reason=f"No ticket number found and AI failed {attempts} times: {e}")
+            return "flagged"
+
+        refs = ", ".join(f"'{x}'" for x in r["references"])
+        if r["matched_ticket"]:
+            how = "number written differently" if r["basis"] == "number" else "site / cell / problem described"
+            note = (f"No standard ticket number in the email; AI matched it to {r['matched_ticket']} "
+                    f"({how}{': ' + refs if refs else ''}). Please confirm the ticket.")
+            self.store.audit("agent", "ticket_identified_by_ai", r["matched_ticket"], references=r["references"],
+                             basis=r["basis"], confidence=r["confidence"])
+            return r["matched_ticket"], note
+        if r["is_ticket_related"]:
+            reason = (f"Mentions ticket {refs} but no matching ticket was found in Remedy" if refs else
+                      "About a ticket, but the AI could not tell which one") + f" ({r['reason']})"
+            email_id = self._store_inbound(msg, email_id, status="needs_review", review_reason=reason,
+                                           retry_after=None, ai_attempts=attempts)
+            self.store.audit("agent", "ticket_not_identified", subject=msg["subject"], references=r["references"])
+            self._draft_ticket_question(msg, email_id, refs)
+            return "flagged"
+        return ignore(f"Not about a ticket (AI: {r['reason'] or 'no ticket reference'})")
+
+    def _draft_ticket_question(self, msg: dict, email_id: int, refs: str) -> None:
+        """Ask the sender which ticket they mean (fixed text, no AI needed). Only for senders we may
+        reply to; nothing is sent before a person approves it."""
+        if not self._trusted_sender(msg["sender"]) or self.store.has_draft_for_email(email_id):
+            return
+        mentioned = f" You mentioned {refs}, but we could not find that ticket in Remedy." if refs else ""
+        body = ("Dear Team,\n\n"
+                f"Thank you for your email.{mentioned} Could you please share the Remedy ticket number "
+                "(for example TT-100234) and the Site / Cell ID this update refers to, so we can link it "
+                "to the correct ticket?\n\n" + self.cfg.settings["agent"]["signature"].strip())
+        subject = msg["subject"] if msg["subject"].lower().startswith("re:") else f"RE: {msg['subject']}"
+        draft_id = self.store.create_draft(
+            tt_number="-", kind="ask_ticket", level=1, to_addrs=[msg["sender"]], cc_addrs=[], subject=subject,
+            body=body, reply_to_message_id=msg["id"], source_email_id=email_id,
+            needs_attention="The agent could not tell which ticket this email is about; this asks the sender.")
+        self.store.audit("agent", "draft_created", None, draft_id=draft_id, kind="ask_ticket")
 
     def _audit_classified(self, tt, email_id, result, review_reason) -> None:
         self.store.audit("agent", "email_classified", tt, email_id=email_id, intent=result.get("intent"),
@@ -269,13 +342,15 @@ class Agent:
             raise ValueError("A reply draft for this email already exists")
         ticket = self.tickets.get(e["tt_number"]) if e["tt_number"] else None
         # Never reply to an address outside escalation.yaml; use the ticket's team instead.
-        to = [e["sender"]] if e["sender"] in self.allowed else \
+        to = [e["sender"]] if self._trusted_sender(e["sender"]) else \
             self.cfg.recipients_for(ticket.get("assignment_group") if ticket else None, 1)
         subject = e["subject"] if e["subject"].lower().startswith("re:") else f"RE: {e['subject']}"
         body = f"Dear Team,\n\n\n\n{self.cfg.settings['agent']['signature'].strip()}"
         note = "Written by a person. Fill in the message before approving."
-        if e["sender"] not in self.allowed:
+        if e["sender"] not in self.allowed and not self.demo_mode:
             note += f" The original sender ({e['sender']}) is not in escalation.yaml, so it goes to the ticket's team."
+        elif e["sender"] not in self.allowed:
+            note += f" Demo mode: replying to {e['sender']} although not in escalation.yaml."
         draft_id = self.store.create_draft(
             tt_number=e["tt_number"] or "-", kind="manual", level=1, to_addrs=to, cc_addrs=[], subject=subject,
             body=body, reply_to_message_id=e["message_id"], source_email_id=email_id, needs_attention=note)
@@ -370,7 +445,13 @@ class Agent:
 
         to = [a.strip().lower() for a in to if a.strip()]
         cc = [a.strip().lower() for a in cc if a.strip()]
-        not_allowed = [a for a in to + cc if a not in self.allowed]
+        # Demo mode: a reply may also go back to the person whose email it answers (nobody else).
+        demo_ok = set()
+        if self.demo_mode and d["kind"] in ("reply", "manual", "ask_ticket") and d["source_email_id"]:
+            src = self.store.get_email(d["source_email_id"])
+            if src and src["sender"]:
+                demo_ok.add(src["sender"].lower())
+        not_allowed = [a for a in to + cc if a not in self.allowed and a not in demo_ok]
         if not to:
             raise ValueError("At least one recipient is required")
         if not_allowed:
@@ -421,6 +502,22 @@ class Agent:
         self.store.update_ticket_state(d["tt_number"], **state_update)
         self.store.audit("human", "draft_approved", d["tt_number"], draft_id=draft_id, edited=bool(edited))
         self.store.audit("agent", "email_sent", d["tt_number"], draft_id=draft_id, kind=d["kind"], to=to, cc=cc)
+
+    def clear_pending_drafts(self) -> int:
+        """Reviewer clears every waiting draft at once. Drafts are marked rejected (kept in the
+        audit trail, not deleted), so automated ones do not come straight back."""
+        drafts = self.store.drafts(status="pending")
+        for d in drafts:
+            self.reject_draft(d["id"], "Cleared by reviewer (clear all)")
+        # Pause automated emails for every cleared ticket (also those whose cleared draft was a reply),
+        # so nothing pops up right after clearing.
+        hours = self.cfg.settings["followup"].get("snooze_after_reject_hours", 12)
+        until = iso(utcnow() + timedelta(hours=hours))
+        for tt in {d["tt_number"] for d in drafts}:
+            self.store.update_ticket_state(tt, snoozed_until=until)
+        if drafts:
+            self.store.audit("human", "drafts_cleared", count=len(drafts))
+        return len(drafts)
 
     def reject_draft(self, draft_id: int, reason: str = "") -> None:
         d = self.store.get_draft(draft_id)

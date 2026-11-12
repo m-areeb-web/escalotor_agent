@@ -90,8 +90,10 @@ class OutlookEmailClient:
             self.cache.deserialize(self.cache_path.read_text())
         # "consumers" = personal Microsoft accounts (outlook.com / hotmail). Use the client's
         # tenant ID here when moving to the enterprise mailbox.
+        # timeout: a stuck network connection must never freeze the agent (it waited forever before).
         self.app = msal.PublicClientApplication(
-            client_id, authority="https://login.microsoftonline.com/consumers", token_cache=self.cache
+            client_id, authority="https://login.microsoftonline.com/consumers", token_cache=self.cache,
+            timeout=30,
         )
 
     def _save_cache(self) -> None:

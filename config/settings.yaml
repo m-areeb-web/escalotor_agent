@@ -17,6 +17,13 @@ agent:
   # If the AI is busy or down, an email is retried automatically (waits 1, 2, 4, 8 min).
   # After this many failed attempts it goes to a person for review.
   ai_max_attempts: 5
+  # When an email has no ticket number in the standard format, ask the AI whether it is about a
+  # ticket and which one (any number format, or by site / cell / problem). false = pattern only.
+  ai_ticket_detection: true
+  # DEMO MODE. true = anyone who emails about a ticket gets a reply draft sent back to THEM, even if
+  # their address is not in escalation.yaml (escalations still only go to escalation.yaml contacts).
+  # The SRS rule is false: only listed contacts. Set to false before real use.
+  demo_reply_to_any_sender: true
 
 tickets:
   # Fake Remedy data for the POC. Regenerate with: python main.py seed
