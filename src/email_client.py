@@ -16,7 +16,7 @@ from pathlib import Path
 import requests
 
 from .config import Config
-from .timeutil import iso, utcnow
+from .timeutil import iso, parse, utcnow
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 # Least privilege: read the mailbox and send as the signed-in user. Nothing else.
@@ -42,6 +42,13 @@ class MockEmailClient:
 
     def fetch_recent(self, limit: int = 50) -> list[dict]:
         return sorted(self._read_inbox(), key=lambda m: m["received_at"])[-limit:]
+
+    def fetch_since(self, since: str | None, max_messages: int = 1000) -> list[dict]:
+        msgs = sorted(self._read_inbox(), key=lambda m: m["received_at"])
+        if since:
+            cutoff = parse(since)
+            msgs = [m for m in msgs if parse(m["received_at"]) >= cutoff]
+        return msgs[:max_messages]
 
     def add_message(self, sender: str, subject: str, body: str, to: list[str] | None = None) -> dict:
         msgs = self._read_inbox()
@@ -121,30 +128,44 @@ class OutlookEmailClient:
             raise EmailError(f"Graph API {method} {path} failed: {r.status_code} {r.text[:300]}")
         return r
 
+    _SELECT = "id,conversationId,subject,body,from,toRecipients,ccRecipients,receivedDateTime"
+    # Ask for plain-text bodies so the AI doesn't have to read HTML.
+    _TEXT = {"Prefer": 'outlook.body-content-type="text"'}
+
+    @staticmethod
+    def _to_msg(m: dict) -> dict:
+        return {
+            "id": m["id"],
+            "conversation_id": m.get("conversationId"),
+            "subject": m.get("subject") or "",
+            "body": (m.get("body") or {}).get("content", ""),
+            "sender": ((m.get("from") or {}).get("emailAddress") or {}).get("address", "").lower(),
+            "to": [x["emailAddress"]["address"].lower() for x in m.get("toRecipients", [])],
+            "cc": [x["emailAddress"]["address"].lower() for x in m.get("ccRecipients", [])],
+            "received_at": m["receivedDateTime"],
+        }
+
     def fetch_recent(self, limit: int = 50) -> list[dict]:
-        r = self._request(
-            "GET", "/me/mailFolders/inbox/messages",
-            params={
-                "$top": str(limit),
-                "$orderby": "receivedDateTime desc",
-                "$select": "id,conversationId,subject,body,from,toRecipients,ccRecipients,receivedDateTime",
-            },
-            # Ask for plain-text bodies so the AI doesn't have to read HTML.
-            headers={"Prefer": 'outlook.body-content-type="text"'},
-        )
-        msgs = []
-        for m in r.json().get("value", []):
-            msgs.append({
-                "id": m["id"],
-                "conversation_id": m.get("conversationId"),
-                "subject": m.get("subject") or "",
-                "body": (m.get("body") or {}).get("content", ""),
-                "sender": ((m.get("from") or {}).get("emailAddress") or {}).get("address", "").lower(),
-                "to": [x["emailAddress"]["address"].lower() for x in m.get("toRecipients", [])],
-                "cc": [x["emailAddress"]["address"].lower() for x in m.get("ccRecipients", [])],
-                "received_at": m["receivedDateTime"],
-            })
-        return list(reversed(msgs))  # oldest first
+        r = self._request("GET", "/me/mailFolders/inbox/messages", headers=dict(self._TEXT), params={
+            "$top": str(limit), "$orderby": "receivedDateTime desc", "$select": self._SELECT})
+        return list(reversed([self._to_msg(m) for m in r.json().get("value", [])]))  # oldest first
+
+    def fetch_since(self, since: str | None, max_messages: int = 1000) -> list[dict]:
+        """Every inbox email received at or after `since`, oldest first, following all result
+        pages so nothing is missed even if many emails arrived while the agent was off."""
+        if not since:
+            return self.fetch_recent(50)
+        stamp = parse(since).strftime("%Y-%m-%dT%H:%M:%SZ")
+        params = {"$filter": f"receivedDateTime ge {stamp}", "$orderby": "receivedDateTime asc",
+                  "$top": "50", "$select": self._SELECT}
+        url, msgs = "/me/mailFolders/inbox/messages", []
+        while url and len(msgs) < max_messages:
+            r = self._request("GET", url, headers=dict(self._TEXT), params=params)
+            data = r.json()
+            msgs.extend(self._to_msg(m) for m in data.get("value", []))
+            nxt = data.get("@odata.nextLink")
+            url, params = (nxt[len(GRAPH):], None) if nxt else (None, None)
+        return msgs[:max_messages]
 
     @staticmethod
     def _addrs(addresses: list[str]) -> list[dict]:

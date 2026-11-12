@@ -1,10 +1,12 @@
 """AI Escalator Agent POC - command line.
 
+  python main.py start             RUN THE AGENT: approval page at http://127.0.0.1:5000 + inbox
+                                   watched every few seconds + follow-up rules every few minutes
   python main.py seed              create fake tickets + sample mock emails (resets the database)
-  python main.py check-email       read new emails, classify, draft replies
-  python main.py followups         apply SLA / follow-up / escalation rules
-  python main.py ui                open the approval page at http://127.0.0.1:5000
-  python main.py run               check email + follow-ups every few minutes (keep running)
+  python main.py check-email       read new emails once, classify, draft replies
+  python main.py followups         apply SLA / follow-up / escalation rules once
+  python main.py ui                same as start
+  python main.py run               like start but without the page (server / background use)
   python main.py login             sign in to Outlook (only for EMAIL_PROVIDER=outlook)
   python main.py mock-email ...    add a test email to the mock inbox
   python main.py test-ai           send one sample email to the AI and print the result
@@ -67,6 +69,7 @@ def seed(cfg) -> None:
                              cc=msg["cc"], subject=msg["subject"], body="", received_at=msg["received_at"],
                              status="ignored", review_reason="Already in mailbox before reset")
         store.audit("agent", "fresh_start", existing_emails_skipped=len(existing))
+        Agent(cfg, storage=store).mark_inbox_start()   # only emails arriving from now on
         print(f"Marked {len(existing)} existing {cfg.email_provider} emails as already seen (not deleted).")
 
 
@@ -77,8 +80,9 @@ def main() -> int:
     sub.add_parser("check-email")
     f = sub.add_parser("followups")
     f.add_argument("--now", help="Pretend the current time is this ISO timestamp (for testing rules)")
-    u = sub.add_parser("ui")
-    u.add_argument("--port", type=int, default=5000)
+    for name in ("start", "ui"):
+        u = sub.add_parser(name)
+        u.add_argument("--port", type=int, default=5000)
     sub.add_parser("run")
     sub.add_parser("login")
     m = sub.add_parser("mock-email")
@@ -115,11 +119,15 @@ def main() -> int:
             print(agent.process_inbox())
         elif args.cmd == "followups":
             print(agent.run_followups(parse(args.now) if args.now else None))
-        elif args.cmd == "ui":
+        elif args.cmd in ("start", "ui"):
             from src.approval_ui import create_app
             print(f"Approval page: http://127.0.0.1:{args.port}")
             create_app(cfg, agent).run(host="127.0.0.1", port=args.port, debug=False)
         elif args.cmd == "run":
+            from src.worker import AgentLock
+            if not AgentLock(cfg.root / "data" / ".agent.lock").acquire():
+                print("Another agent is already running (start/ui/run). Stop it first.", file=sys.stderr)
+                return 1
             interval = cfg.settings["agent"]["poll_interval_minutes"] * 60
             print(f"Running every {interval // 60} min. Ctrl+C to stop. Approve drafts with: python main.py ui")
             while True:

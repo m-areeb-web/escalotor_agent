@@ -53,7 +53,8 @@ class Config:
         """Return normalised ticket IDs (TT-123456) found in text, in order, no duplicates."""
         seen: list[str] = []
         for m in self.ticket_re.finditer(text or ""):
-            tt = f"TT-{m.group(1)}"
+            digits = m.group(1) if m.re.groups else re.sub(r"\D", "", m.group(0))
+            tt = f"TT-{digits}"
             if tt not in seen:
                 seen.append(tt)
         return seen
@@ -62,19 +63,22 @@ class Config:
     def _group(self, assignment_group: str | None) -> dict:
         groups = self.escalation.get("assignment_groups", {})
         if assignment_group in groups:
-            return groups[assignment_group]
-        return groups[self.escalation["default_group"]]
+            return groups[assignment_group] or {}
+        default = self.escalation.get("default_group")
+        if default not in groups:
+            raise ValueError(f"escalation.yaml: no group '{assignment_group}' and default_group '{default}' is not defined")
+        return groups[default] or {}
 
     def recipients_for(self, assignment_group: str | None, level: int) -> list[str]:
         group = self._group(assignment_group)
-        return [a.lower() for a in group.get(f"level_{level}", [])]
+        return [a.strip().lower() for a in (group.get(f"level_{level}") or []) if a and a.strip()]
 
     def allowed_recipients(self) -> set[str]:
         """Every address in escalation.yaml. The agent may only send to these."""
         allowed: set[str] = set()
         for group in self.escalation.get("assignment_groups", {}).values():
-            for addresses in group.values():
-                allowed.update(a.lower() for a in addresses)
+            for addresses in (group or {}).values():
+                allowed.update(a.strip().lower() for a in (addresses or []) if a and a.strip())
         return allowed
 
 

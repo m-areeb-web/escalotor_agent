@@ -26,8 +26,10 @@ CREATE TABLE IF NOT EXISTS emails (
     intent          TEXT,
     confidence      REAL,
     extracted       TEXT,                      -- JSON from the classifier
-    status          TEXT NOT NULL DEFAULT 'processed',  -- processed | ignored | needs_review | reviewed
-    review_reason   TEXT
+    status          TEXT NOT NULL DEFAULT 'processed',  -- processed | ignored | needs_review | reviewed | ai_retry
+    review_reason   TEXT,
+    ai_attempts     INTEGER NOT NULL DEFAULT 0,   -- failed AI calls so far (retried automatically)
+    retry_after     TEXT                          -- when status=ai_retry: earliest next attempt
 );
 CREATE INDEX IF NOT EXISTS idx_emails_tt ON emails(tt_number);
 
@@ -60,7 +62,13 @@ CREATE TABLE IF NOT EXISTS ticket_state (
     last_outbound_at   TEXT,
     last_escalation_at TEXT,
     last_status        TEXT,
-    closed             INTEGER NOT NULL DEFAULT 0
+    closed             INTEGER NOT NULL DEFAULT 0,
+    snoozed_until      TEXT                 -- no automated drafts before this (set when a draft is rejected)
+);
+
+CREATE TABLE IF NOT EXISTS meta (           -- small key/value store, e.g. inbox position
+    key   TEXT PRIMARY KEY,
+    value TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -82,6 +90,26 @@ class Storage:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            # Upgrade databases created by older versions of the POC.
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(emails)")}
+            if "ai_attempts" not in cols:
+                c.execute("ALTER TABLE emails ADD COLUMN ai_attempts INTEGER NOT NULL DEFAULT 0")
+            if "retry_after" not in cols:
+                c.execute("ALTER TABLE emails ADD COLUMN retry_after TEXT")
+            tcols = {r["name"] for r in c.execute("PRAGMA table_info(ticket_state)")}
+            if "snoozed_until" not in tcols:
+                c.execute("ALTER TABLE ticket_state ADD COLUMN snoozed_until TEXT")
+
+    # ---- meta ----------------------------------------------------------------
+    def get_meta(self, key: str) -> str | None:
+        with self._conn() as c:
+            row = c.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._conn() as c:
+            c.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (key, value))
 
     @contextmanager
     def _conn(self):
@@ -112,23 +140,59 @@ class Storage:
         return [dict(r) for r in rows]
 
     # ---- emails --------------------------------------------------------------
+    def email_id_for_message(self, message_id: str) -> int | None:
+        with self._conn() as c:
+            row = c.execute("SELECT id FROM emails WHERE message_id=?", (message_id,)).fetchone()
+        return row["id"] if row else None
+
     def email_seen(self, message_id: str) -> bool:
         with self._conn() as c:
             return c.execute("SELECT 1 FROM emails WHERE message_id=?", (message_id,)).fetchone() is not None
 
     def save_email(self, *, message_id, direction, sender, recipients, cc, subject, body, received_at,
                    conversation_id=None, tt_number=None, intent=None, confidence=None, extracted=None,
-                   status="processed", review_reason=None) -> int:
+                   status="processed", review_reason=None, ai_attempts=0, retry_after=None) -> int:
         with self._conn() as c:
             cur = c.execute(
                 """INSERT INTO emails (message_id, conversation_id, tt_number, direction, sender, recipients,
-                   cc, subject, body, received_at, intent, confidence, extracted, status, review_reason)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   cc, subject, body, received_at, intent, confidence, extracted, status, review_reason,
+                   ai_attempts, retry_after)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (message_id, conversation_id, tt_number, direction, sender, json.dumps(recipients or []),
                  json.dumps(cc or []), subject, body, received_at, intent, confidence,
-                 json.dumps(extracted) if extracted is not None else None, status, review_reason),
+                 json.dumps(extracted) if extracted is not None else None, status, review_reason,
+                 ai_attempts, retry_after),
             )
             return cur.lastrowid
+
+    def update_email(self, email_id: int, **fields) -> None:
+        if "extracted" in fields and fields["extracted"] is not None:
+            fields["extracted"] = json.dumps(fields["extracted"])
+        cols = ", ".join(f"{k}=?" for k in fields)
+        with self._conn() as c:
+            c.execute(f"UPDATE emails SET {cols} WHERE id=?", (*fields.values(), email_id))
+
+    def emails_due_for_retry(self, now_iso: str) -> list[dict]:
+        """Emails whose AI step failed earlier and are due for another attempt."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM emails WHERE status='ai_retry' AND (retry_after IS NULL OR retry_after <= ?) "
+                "ORDER BY id", (now_iso,)).fetchall()
+        return [_email_row(r) for r in rows]
+
+    def count_waiting_for_ai(self) -> int:
+        with self._conn() as c:
+            return c.execute("SELECT COUNT(*) FROM emails WHERE status='ai_retry'").fetchone()[0]
+
+    def ticket_for_conversation(self, conversation_id: str | None) -> str | None:
+        """Ticket number already linked to this email thread, if any."""
+        if not conversation_id:
+            return None
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT tt_number FROM emails WHERE conversation_id=? AND tt_number IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (conversation_id,)).fetchone()
+        return row["tt_number"] if row else None
 
     def get_email(self, email_id: int) -> dict | None:
         with self._conn() as c:
@@ -183,12 +247,15 @@ class Storage:
             rows = c.execute(sql + " ORDER BY id DESC", args).fetchall()
         return [_draft_row(r) for r in rows]
 
-    def has_pending_draft(self, tt_number: str) -> bool:
-        """Duplicate prevention (NFR-07): while any draft for a ticket awaits a human decision,
-        the follow-up engine does not create another one."""
+    def has_pending_draft(self, tt_number: str, kinds: tuple[str, ...] | None = None) -> bool:
+        """Duplicate prevention (NFR-07): while a draft for a ticket awaits a human decision,
+        the follow-up engine does not create another one. `kinds` limits which drafts count."""
+        sql, args = "SELECT 1 FROM drafts WHERE tt_number=? AND status='pending'", [tt_number]
+        if kinds:
+            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            args += list(kinds)
         with self._conn() as c:
-            return c.execute("SELECT 1 FROM drafts WHERE tt_number=? AND status='pending'",
-                             (tt_number,)).fetchone() is not None
+            return c.execute(sql, args).fetchone() is not None
 
     def has_draft_for_email(self, email_id: int) -> bool:
         with self._conn() as c:

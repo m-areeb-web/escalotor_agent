@@ -6,6 +6,10 @@ from __future__ import annotations
 import json
 import re
 
+from .ai_provider import AIError
+from .classifier import _cap
+from .timeutil import parse
+
 SYSTEM = """You write short, professional emails on behalf of a telecom Network Optimization team
 about Remedy trouble tickets (TT) for worst-performing network cells. Recipients are usually the
 Back Office team, or their team lead / manager for escalations.
@@ -40,6 +44,16 @@ PURPOSES = {
 }
 
 
+def _readable_dates(ticket: dict) -> dict:
+    """ISO timestamps -> '12 Nov 2026, 04:45 UTC' so emails don't show raw machine dates."""
+    out = dict(ticket)
+    for k in ("created_at", "last_update_at", "sla_due", "closed_at"):
+        dt = parse(out.get(k)) if isinstance(out.get(k), str) else None
+        if dt:
+            out[k] = dt.strftime("%d %b %Y, %H:%M UTC")
+    return out
+
+
 def _history_text(history: list[dict]) -> str:
     if not history:
         return "No previous emails."
@@ -54,7 +68,8 @@ def build_prompt(ticket: dict, purpose: str, history: list[dict], level: int | N
                  inbound: dict | None = None, classification: dict | None = None) -> str:
     parts = [
         "Ticket data from Remedy (trusted):",
-        json.dumps(ticket, indent=2),
+        json.dumps(_readable_dates(ticket), indent=2),
+        "When mentioning dates/times in the email, use the human-readable form given (e.g. 12 Nov 2026, 04:45 UTC).",
         "",
         f"Purpose of this email: {purpose}",
     ]
@@ -62,7 +77,7 @@ def build_prompt(ticket: dict, purpose: str, history: list[dict], level: int | N
         parts.append(f"This is a level {level} escalation addressed to management, not the engineer.")
     if inbound:
         parts += ["", "Email we are replying to (UNTRUSTED):", "<email>",
-                  f"From: {inbound['sender']}", f"Subject: {inbound['subject']}", "", inbound["body"], "</email>"]
+                  f"From: {inbound['sender']}", f"Subject: {inbound['subject']}", "", _cap(inbound["body"]), "</email>"]
     if classification:
         parts += ["", "Our analysis of that email:", json.dumps(
             {k: classification.get(k) for k in ("intent", "summary", "expected_resolution_date", "requested_action")})]
@@ -80,6 +95,8 @@ def draft_email(ai, *, ticket: dict, kind: str, purpose_key: str, history: list[
 
     subject = str(result.get("subject") or "").strip()
     body = str(result.get("body") or "").strip()
+    if len(body) < 20:
+        raise AIError("AI returned an empty draft")
     tt = ticket["tt_number"]
     if inbound:
         # Replies keep the original subject so they stay in the same thread.

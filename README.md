@@ -32,7 +32,7 @@ Flash model name from the AI Studio model list.
 .venv/bin/python main.py seed          # fake tickets + 6 sample emails, resets the database
 .venv/bin/python main.py check-email   # read, classify, draft replies
 .venv/bin/python main.py followups     # SLA / no-update / escalation rules
-.venv/bin/python main.py ui            # open http://127.0.0.1:5000 to approve / edit / reject
+.venv/bin/python main.py start         # open http://127.0.0.1:5000 to approve / edit / reject
 ```
 
 The sample emails include a normal update, a resolution, an information request, a
@@ -68,19 +68,52 @@ Simulate Back Office progress by editing `data/fake_tickets.json` (e.g. set a st
    (playing the Back Office). Then send emails from that account mentioning a ticket number
    like `TT-100234`, and run `check-email`.
 
-## 5. Run continuously
+## 5. Run the agent
 
 ```bash
-.venv/bin/python main.py run    # checks inbox + rules every 5 minutes (settings.yaml)
-.venv/bin/python main.py ui     # in a second terminal, to approve drafts
+.venv/bin/python main.py start   # everything in one window; open http://127.0.0.1:5000
 ```
+
+`start` runs the whole agent:
+
+- **Inbox** checked every `inbox_watch_seconds` (default 10). New emails are processed straight
+  away; the page shows "Fetching N new emails…" and then refreshes itself (not while you are
+  editing a draft).
+- **Follow-up / SLA / escalation rules** run every `poll_interval_minutes` (default 5).
+- **Nothing is missed:** the agent remembers how far it has read and fetches every email since
+  then, page by page, even if the laptop was off.
+- **Replies are cleaned:** quoted earlier messages ("On … wrote:", Outlook "From/Sent" blocks,
+  "> " lines) are removed before matching ticket numbers or calling the AI. A reply in a known
+  ticket thread is matched even without the ticket number.
+- **AI outages:** if the AI is busy or down, the email is retried automatically (1, 2, 4, 8 min);
+  after `ai_max_attempts` it goes to a person.
+- **Flagged emails** can be answered by hand with **Write reply** (same approval and recipient
+  safety checks).
+- **Only one agent runs at a time.** A second `start`/`run` refuses to process email, so nothing
+  is handled twice.
+
+`python main.py run` does the same without the page (for a server).
+
+## SLA matrix
+
+All timing comes from one table in `config/settings.yaml` (`sla_matrix`), also shown in the app
+under **SLA matrix**. Default values (hours):
+
+| Priority | Resolve within | Follow up if no update | Reminder before deadline | Team lead | Manager | Repeat |
+|---|---|---|---|---|---|---|
+| Critical | 4 | 2 | 1 | at deadline | +2 after deadline | every 4 |
+| High | 24 | 8 | 4 | at deadline | +8 after deadline | every 12 |
+| Medium | 72 | 24 | 8 | at deadline | +24 after deadline | every 24 |
+| Low | 120 | 48 | 12 | at deadline | +48 after deadline | every 48 |
+
+A ticket's own SLA date from Remedy is used when present; otherwise deadline = created + "resolve within".
 
 ## Configuration
 
 | File | What it controls |
 |---|---|
 | `.env` | AI provider, model, API key, email provider, Azure client ID |
-| `config/settings.yaml` | Follow-up timings, SLA reminder windows, escalation repeat time, confidence threshold |
+| `config/settings.yaml` | **SLA matrix** (per priority: resolve within, follow-up, reminder, team lead / manager escalation, repeat), check intervals, AI confidence threshold |
 | `config/escalation.yaml` | Level 1/2/3 recipients per assignment group. **The agent can only send to these addresses.** |
 | `data/fake_tickets.json` | Fake Remedy tickets (`main.py seed` regenerates them) |
 
@@ -90,7 +123,15 @@ Simulate Back Office progress by editing `data/fake_tickets.json` (e.g. set a st
 - Recipients come only from `escalation.yaml`; addresses inside emails are never used.
 - Email content is treated as untrusted data, and injection attempts are flagged (AI instruction plus a code check).
 - Unknown senders, unclear intent, low confidence and tickets missing from Remedy are flagged for review.
-- One pending draft per ticket, so there are no duplicate follow-ups.
+  Unknown senders never get an automatic draft (a person can use **Write reply**).
+- Out-of-office replies are ignored and do not count as a ticket update; bounces are flagged.
+- One pending draft per ticket, so there are no duplicate follow-ups. A waiting reply never holds back
+  an SLA escalation.
+- Rejecting an automated email pauses automated emails for that ticket (`snooze_after_reject_hours`).
+- Empty messages, closed tickets and addresses outside `escalation.yaml` are refused at approval.
+- One broken email never blocks the others; it is put in the review list.
+- The approval page only answers on this computer and every button carries a secret token, so
+  other websites cannot press "Approve" in your browser.
 - Full audit log of every agent and human action (`/audit` page).
 - Keys stay in `.env`, which is git-ignored.
 

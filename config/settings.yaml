@@ -6,12 +6,17 @@ agent:
   signature: |
     Regards,
     Network Optimization Team
-  # How often `python main.py run` checks the inbox and ticket rules.
+  # How often the follow-up / SLA / escalation rules run (minutes).
   poll_interval_minutes: 5
+  # How often the inbox is checked for new emails (seconds) while `python main.py start` runs.
+  inbox_watch_seconds: 10
   # How Remedy ticket numbers look in emails. Matches TT-100234, TT100234, tt-100234.
   ticket_id_pattern: '\bTT-?\s?(\d{6})\b'
   # Below this AI confidence, an email is flagged for human review instead of auto-drafting.
   min_confidence: 0.6
+  # If the AI is busy or down, an email is retried automatically (waits 1, 2, 4, 8 min).
+  # After this many failed attempts it goes to a person for review.
+  ai_max_attempts: 5
 
 tickets:
   # Fake Remedy data for the POC. Regenerate with: python main.py seed
@@ -19,15 +24,31 @@ tickets:
   # Ticket statuses that mean "stop following up".
   closed_statuses: ["Closed"]
 
+# ---------------------------------------------------------------------------
+# SLA MATRIX - what the agent does, and when, for each ticket priority.
+# The client asked us to set these values; change any number here (hours).
+#
+#   resolve_within    SLA deadline = ticket created + this
+#                     (only used when the ticket has no SLA date of its own from Remedy)
+#   followup_if_quiet chase the Back Office when nothing has happened on the ticket for this long
+#   remind_before     one reminder this long before the SLA deadline
+#   team_lead_after   escalate to the team lead (level 2) this long AFTER the deadline passes
+#   manager_after     escalate to the manager (level 3) this long after the deadline passes
+#   repeat_every      once at manager level, chase again this often until the ticket moves
+# ---------------------------------------------------------------------------
+sla_matrix:
+  Critical: { resolve_within: 4,   followup_if_quiet: 2,  remind_before: 1,  team_lead_after: 0, manager_after: 2,  repeat_every: 4 }
+  High:     { resolve_within: 24,  followup_if_quiet: 8,  remind_before: 4,  team_lead_after: 0, manager_after: 8,  repeat_every: 12 }
+  Medium:   { resolve_within: 72,  followup_if_quiet: 24, remind_before: 8,  team_lead_after: 0, manager_after: 24, repeat_every: 24 }
+  Low:      { resolve_within: 120, followup_if_quiet: 48, remind_before: 12, team_lead_after: 0, manager_after: 48, repeat_every: 48 }
+
 followup:
-  # Send a follow-up if there has been no activity on the ticket for this many hours.
-  no_update_hours: { Critical: 2, High: 8, Medium: 24, Low: 48 }
-  # Send a one-time reminder when the SLA deadline is this close (hours).
-  reminder_before_sla_hours: { Critical: 1, High: 4, Medium: 8, Low: 12 }
-  # Never send two automated emails on the same ticket closer together than this.
-  min_hours_between_followups: 4
-  # After an escalation, wait this long before escalating to the next level.
-  escalation_repeat_hours: 12
+  # Tickets with an unknown priority use this row of the SLA matrix.
+  default_priority: Medium
+  # Never send two follow-up / reminder emails on the same ticket closer together than this.
+  min_hours_between_followups: 1
+  # When a reviewer rejects an automated email, no new automated email for that ticket for this long.
+  snooze_after_reject_hours: 12
   # Highest escalation level defined in escalation.yaml.
   max_escalation_level: 3
   # A "Resolved" ticket not closed after this many hours gets a closure-check email.

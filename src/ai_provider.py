@@ -74,7 +74,8 @@ class GeminiProvider:
                     if code not in (408, 429, 500, 502, 503, 504) and not isinstance(e, requests.RequestException):
                         raise AIError(f"Gemini error ({model}): {e}") from e
                     errors.append(f"{model}: {code or type(e).__name__}")
-            time.sleep(5)
+            if attempt == 0:
+                time.sleep(5)
         raise AIError("All Gemini models failed: " + "; ".join(errors[-4:]))
 
 
