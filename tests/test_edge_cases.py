@@ -200,7 +200,7 @@ def test_ticket_number_in_another_format_is_matched(agent, cfg):
 
 
 def test_ticket_found_by_cell_name(agent, cfg):
-    agent.email.add_message(bo(cfg), "Drop issue", "The call drop problem on LHR-0451-2 is still under investigation.")
+    agent.email.add_message(bo(cfg), "Drop issue", "The call drop problem on W5634_2 is still under investigation.")
     agent.process_inbox()
     assert emails(agent)[0]["tt_number"] == "TT-100234"
 

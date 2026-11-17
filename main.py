@@ -35,11 +35,11 @@ def seed(cfg) -> None:
     bo = cfg.recipients_for("Back Office RF", 1)[0]
     mock = MockEmailClient(cfg.root)
     samples = [
-        (bo, "RE: TT-100235 | KHI-1120 | Low throughput",
-         "Hi team,\n\nWe are investigating TT-100235. Initial checks show high PRB utilisation on KHI-1120-1. "
+        (bo, "RE: TT-100235 | W2258 | Low throughput",
+         "Hi team,\n\nWe are investigating TT-100235. Initial checks show high PRB utilisation on W2258_1. "
          "Field team visit is planned and we expect resolution by 2026-11-12.\n\nThanks,\nBack Office RF"),
         (bo, "TT-100237 resolved",
-         "Hello,\n\nThe interference issue on LHR-0612-1 (TT-100237) has been resolved after replacing the "
+         "Hello,\n\nThe interference issue on W2200_1 (TT-100237) has been resolved after replacing the "
          "faulty TMA. Please verify KPIs.\n\nRegards,\nBack Office RF"),
         (bo, "Query on TT-100234",
          "Hi,\n\nFor TT-100234 please share the drop call KPI trend for the last 7 days and the list of "
@@ -109,7 +109,7 @@ def main() -> int:
         from src.ticket_source import get_ticket_source
         email = {"sender": "backoffice.test@example.com", "subject": "RE: TT-100234",
                  "received_at": "2026-11-09T10:00:00+00:00",
-                 "body": "We are still checking TT-100234 on LHR-0451-2. Antenna tilt change planned, ETA 2026-11-11."}
+                 "body": "We are still checking TT-100234 on W5634_2. Antenna tilt change planned, ETA 2026-11-11."}
         ticket = get_ticket_source(cfg).get("TT-100234")
         print(f"Provider: {cfg.ai_provider} / model: {cfg.ai_model}")
         print(json.dumps(classify_email(get_provider(cfg), email, ticket, 0.6), indent=2))
