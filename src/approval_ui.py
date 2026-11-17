@@ -143,6 +143,7 @@ CRQ_MACRO = """{% macro crq_box(c, open=False) %}{% if c is not none %}
 <td>{% if x.match %}<b>Yes</b> · {{ x.match }}{% else %}<span class="muted">–</span>{% endif %}</td></tr>{% endfor %}
 </table></div>{% if c.total > c.crqs|length %}<div class="muted">Showing {{ c.crqs|length }} of {{ c.total }}.</div>{% endif %}
 {% else %}<div class="muted">No CRQs found on this site in this period.</div>{% endif %}
+{% if c.data_as_of %}<div class="muted">CRQ records up to {{ c.data_as_of[:16].replace('T', ' ') }}{% if c.data_ends_early %}: work after that is not in the data yet{% endif %}.</div>{% endif %}
 {% if c.unknown_site_crqs %}<div class="muted">Not certain: {{ c.unknown_site_crqs }} CRQs in this period list their sites only in an attachment that is not in the CRQ data.</div>{% endif %}
 <div class="muted">"Matches" means the work type can cause this kind of problem (config/crq_relevance.yaml); it is a hint for what to check first, not a confirmed cause. From the CRQ Analyst (scheduled times are local time). Window: {{ crq_days }} days before the ticket was opened until now.</div>
 </details>{% elif crq_unavailable %}<div class="muted" style="margin:6px 0">CRQ check unavailable (is the CRQ Analyst running?).</div>{% endif %}{% endmacro %}

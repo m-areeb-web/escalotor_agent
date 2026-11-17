@@ -108,6 +108,7 @@ class CRQLookup:
                 "window_start": iso(start), "window_end": iso(end),
                 "total": int(data.get("total_matches") or 0),
                 "unknown_site_crqs": int(data.get("crqs_with_unknown_sites_in_window") or 0),
+                "data_as_of": data.get("data_as_of"),   # CRQs created after this are not in the data
                 "crqs": [c for c in (data.get("crqs") or []) if isinstance(c, dict) and c.get("crq_id")],
             }
         except Exception as e:  # noqa: BLE001 - the CRQ side must never break the agent
@@ -122,13 +123,21 @@ class CRQLookup:
     def _with_matches(self, result: dict, ticket: dict) -> dict:
         """Mark CRQs that fit the ticket's problem (done per ticket; the site data is cached)."""
         issues, crqs = self.relevance.mark(result["crqs"], ticket)
-        return {**result, "issue_types": issues, "matches": sum(1 for c in crqs if c["match"]), "crqs": crqs}
+        as_of, end = parse(result.get("data_as_of")), parse(result.get("window_end"))
+        return {**result, "issue_types": issues, "matches": sum(1 for c in crqs if c["match"]), "crqs": crqs,
+                # the CRQ export ends before the window does: later work is not in the data yet
+                "data_ends_early": bool(as_of and end and as_of < end)}
 
     def email_note(self, result: dict | None) -> str | None:
         """Plain-text note for a drafted email, written by code (never by the AI), or None.
-        Only when CRQs were found: "nothing found" is not news worth an email line."""
-        if not result or not result["crqs"]:
+        "No CRQs" is only written when it is certain (see none_is_certain); otherwise no note."""
+        if not result:
             return None
+        if not result["crqs"]:
+            if not none_is_certain(result):
+                return None
+            return (f"Planned work check: no CRQs on site {result['site']} from "
+                    f"{_day(result['window_start'])} until now in the CRQ records.")
         crqs = result["crqs"]
         shown = crqs[: int(self.s["max_in_email"])]
         since = _day(result["window_start"])
@@ -139,6 +148,16 @@ class CRQLookup:
             lines.append(f"- and {result['total'] - len(shown)} more")
         lines.append("Please check whether any of these changes is related to this issue.")
         return "\n".join(lines)
+
+
+def none_is_certain(result: dict) -> bool:
+    """True only when "no CRQs on this site" cannot be false information:
+    nothing found, no CRQ in the window hides its sites in an attachment, and the CRQ data
+    covers the whole window (an export taken before "now" knows nothing about later work)."""
+    if result.get("total") or result.get("crqs") or result.get("unknown_site_crqs"):
+        return False
+    as_of, end = parse(result.get("data_as_of")), parse(result.get("window_end"))
+    return bool(as_of and end and as_of >= end)
 
 
 def is_risky(c: dict) -> bool:

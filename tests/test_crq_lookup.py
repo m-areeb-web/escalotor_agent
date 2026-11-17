@@ -218,3 +218,35 @@ def test_ticket_page_without_box_when_setting_off(cfg):
     server = FakeCRQServer()
     html = page(cfg, server, "/ticket/TT-100234")
     assert "Recent CRQs" not in html and server.calls == []
+
+
+# ---- "no CRQs" only when certain -------------------------------------------
+def none_result(**kw):
+    r = {"site": "W6102", "window_start": "2026-11-10T12:00:00+00:00", "window_end": "2026-11-18T09:00:00+00:00",
+         "total": 0, "unknown_site_crqs": 0, "data_as_of": "2026-11-20T00:00+03:00", "crqs": []}
+    r.update(kw)
+    return r
+
+
+def test_none_line_only_when_certain():
+    lk = CRQLookup(settings())
+    assert lk.email_note(none_result()) == \
+        "Planned work check: no CRQs on site W6102 from 10 Nov 2026 until now in the CRQ records."
+    # some CRQs in the window list their sites only in an attachment: the site may be among them
+    assert lk.email_note(none_result(unknown_site_crqs=3)) is None
+    # the export was taken before "now": work after it is not in the data
+    assert lk.email_note(none_result(data_as_of="2026-11-11T23:03+03:00")) is None
+    # freshness unknown
+    assert lk.email_note(none_result(data_as_of=None)) is None
+    # CRQ side down
+    assert lk.email_note(None) is None
+
+
+def test_page_says_when_data_ends_before_now(cfg):
+    class Old(FakeCRQServer):
+        def get(self, url, timeout, params):
+            r = super().get(url, timeout, params)
+            r.data["data_as_of"] = "2026-11-11T23:03+03:00"
+            return r
+    html = page(cfg, Old(crqs=[]), "/ticket/TT-100236")
+    assert "CRQ records up to 2026-11-11 23:03: work after that is not in the data yet." in html
