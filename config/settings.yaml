@@ -79,9 +79,8 @@ crq:
   lookback_days: 7
   # "Recent CRQs on this site" box on the ticket page and on drafts.
   show_on_ticket_page: true
-  # One code-written note in drafted emails (only when CRQs are found).
-  # OFF until the client confirms they want it in emails.
-  add_note_to_emails: false
+  # One code-written note in drafted emails (only when CRQs are found). Core feature: always on.
+  add_note_to_emails: true
   max_in_email: 3
   timeout_seconds: 3
   cache_minutes: 10
