@@ -197,6 +197,9 @@ def test_ticket_page_shows_crqs_failed_highlighted(cfg):
     html = page(cfg, FakeCRQServer(), "/ticket/TT-100234")
     assert "Recent CRQs on site W5634" in html and "CRQ000000000002" in html
     assert "1 FAILED/ROLLBACK" in html
+    # TT-100234 is a call-drop ticket: the SW upgrade CRQ is marked, with its reason
+    assert "Reported issue type: Call drops" in html and "1 match the reported issue" in html
+    assert "Call drops: sw work" in html
     assert "12 CRQs in this period list their sites only in an attachment" in html
 
 

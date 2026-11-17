@@ -16,9 +16,11 @@ import logging
 import re
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import requests
 
+from .crq_relevance import RelevanceTable
 from .timeutil import iso, parse, utcnow
 
 log = logging.getLogger(__name__)
@@ -32,7 +34,10 @@ DEFAULTS = {
     "timeout_seconds": 3,
     "max_in_email": 3,
     "cache_minutes": 10,
+    # Table of problem types -> CRQ work that can cause them (marks "matches the reported issue").
+    "relevance_file": "config/crq_relevance.yaml",
 }
+_REPO = Path(__file__).resolve().parent.parent
 _SITE = re.compile(r"^\s*([A-Za-z]?\d{3,5})(?:[_-]\d{1,2})?\s*$")   # W6102, W6102_1, 6102
 _RISKY = ("FAILED", "ROLLBACK")
 _FAILURE_MEMORY_SECONDS = 60
@@ -52,9 +57,15 @@ def site_of(ticket: dict) -> str | None:
 
 
 class CRQLookup:
-    def __init__(self, settings: dict, session: requests.Session | None = None):
+    def __init__(self, settings: dict, session: requests.Session | None = None,
+                 relevance: RelevanceTable | None = None):
         self.s = crq_settings(settings)
         self.http = session or requests.Session()
+        path = Path(self.s["relevance_file"]) if self.s.get("relevance_file") else None
+        if relevance is None:
+            relevance = RelevanceTable.load(path if path is None or path.is_absolute() else _REPO / path) \
+                if path else RelevanceTable([])
+        self.relevance = relevance
         self._cache: dict[tuple, tuple[float, dict | None]] = {}
         self._down_until = 0.0
         self.last_error: str | None = None
@@ -70,8 +81,9 @@ class CRQLookup:
         return created - timedelta(days=float(self.s["lookback_days"])), now or utcnow()
 
     def for_ticket(self, ticket: dict | None, now: datetime | None = None) -> dict | None:
-        """{site, window_start, window_end, total, unknown_site_crqs, crqs: [...]} or None when
-        disabled, the ticket has no usable site/date, or the CRQ Analyst cannot be reached."""
+        """{site, window_start, window_end, total, unknown_site_crqs, issue_types, matches, crqs}
+        or None when disabled, the ticket has no usable site/date, or the CRQ Analyst cannot be
+        reached. Each CRQ carries `match`: why it fits the ticket's problem, or None."""
         if not self.enabled or not ticket:
             return None
         site, win = site_of(ticket), self.window(ticket, now)
@@ -82,7 +94,7 @@ class CRQLookup:
         key = (site, start.strftime("%Y%m%d%H"), end.strftime("%Y%m%d%H"))
         hit = self._cache.get(key)
         if hit and time.monotonic() - hit[0] < float(self.s["cache_minutes"]) * 60:
-            return hit[1]
+            return self._with_matches(hit[1], ticket)
         if time.monotonic() < self._down_until:
             return None   # failed moments ago: don't make every page wait for the timeout again
 
@@ -105,7 +117,12 @@ class CRQLookup:
             return None
         self.last_error = None
         self._cache[key] = (time.monotonic(), result)
-        return result
+        return self._with_matches(result, ticket)
+
+    def _with_matches(self, result: dict, ticket: dict) -> dict:
+        """Mark CRQs that fit the ticket's problem (done per ticket; the site data is cached)."""
+        issues, crqs = self.relevance.mark(result["crqs"], ticket)
+        return {**result, "issue_types": issues, "matches": sum(1 for c in crqs if c["match"]), "crqs": crqs}
 
     def email_note(self, result: dict | None) -> str | None:
         """Plain-text note for a drafted email, written by code (never by the AI), or None.
@@ -116,7 +133,8 @@ class CRQLookup:
         shown = crqs[: int(self.s["max_in_email"])]
         since = _day(result["window_start"])
         lines = [f"Planned work check: {result['total']} CRQ(s) on site {result['site']} since {since}:"]
-        lines += [f"- {crq_line(c)}" for c in shown]
+        lines += [f"- {crq_line(c)}" + (f" - matches the reported issue ({c['match']})" if c.get("match") else "")
+                  for c in shown]
         if result["total"] > len(shown):
             lines.append(f"- and {result['total'] - len(shown)} more")
         lines.append("Please check whether any of these changes is related to this issue.")

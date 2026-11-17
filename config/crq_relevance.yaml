@@ -1,0 +1,59 @@
+# WHICH PLANNED WORK CAN CAUSE WHICH PROBLEM
+#
+# Used by the CRQ check: CRQs on the ticket's site whose work matches the ticket's problem type
+# are marked "matches the reported issue" and listed first. Nothing is ever hidden, and the
+# agent never says a CRQ CAUSED the problem; it only says which ones to check first.
+#
+# DRAFT for the client's RF / transmission engineers to review. Edit freely:
+#   ticket_words  words in the ticket's problem description that identify this problem type
+#   crq_work      words in a CRQ's work title that mean this kind of work can cause it
+# Matching is case-insensitive on whole words ("rru" matches "RRU swap", not "rrus2").
+# Restart the agent after editing.
+
+issue_types:
+
+  interference:
+    label: "Interference"
+    ticket_words: [interference, rssi, noise, pim, "ul noise", "uplink noise"]
+    crq_work: [antenna, antennas, rru, rrus, rrh, tma, vswr, feeder, jumper, jumpers, filter, rf,
+               sector, tilt, azimuth, carrier, frequency, 5g, nr, pci, rx, imbalance, reflected,
+               swap, "new sector"]
+
+  call_drops:
+    label: "Call drops"
+    ticket_words: [drop, drops, dropped, dcr, "call drop", "call drops", retainability]
+    crq_work: [antenna, rru, rrus, rrh, tma, vswr, feeder, jumper, rx, imbalance, tilt, pci,
+               neighbour, neighbor, neighbours, neighbors, parameter, parameters, feature, sw,
+               software, swap, hw, hardware, bbu]
+
+  low_throughput:
+    label: "Low throughput / capacity"
+    ticket_words: [throughput, mbps, speed, prb, congestion, congested, capacity, latency, slow]
+    crq_work: [capacity, link, links, mw, microwave, odu, idu, bandwidth, router, ipran, fiber,
+               fibre, rehoming, rerouting, routing, vlan, vlans, sfp, transmission, carrier, feature,
+               license, licence, sw, software, bbu]
+
+  unavailability:
+    label: "Cell / site unavailable"
+    ticket_words: [unavailable, unavailability, availability, outage, down, "site down", "cell down",
+                   sleeping, "no service"]
+    crq_work: [power, battery, batteries, rectifier, mccb, pdu, dc, generator, shelter, cabinet,
+               link, links, mw, microwave, odu, idu, fiber, fibre, router, transmission, sfp, hub,
+               npu, ipran, dismantle, migration, rehoming, rerouting, swap, bbu]
+
+  handover:
+    label: "Handover failures"
+    ticket_words: [handover, handovers, ho, mobility, neighbour, neighbor, x2]
+    crq_work: [neighbour, neighbor, neighbours, neighbors, nbr, anr, pci, parameter, parameters,
+               tilt, azimuth, antenna, dismantle, "new sector", integration, 5g, nr, feature]
+
+  accessibility:
+    label: "Call setup / access failures"
+    ticket_words: [setup, accessibility, access, rrc, erab, "e-rab", attach, volte]
+    crq_work: [sw, software, feature, parameter, parameters, license, licence, core, enm,
+               configuration, configure, integration, migration, bbu]
+
+  coverage:
+    label: "Coverage"
+    ticket_words: [coverage, rsrp, "weak signal", "no signal", "poor signal"]
+    crq_work: [antenna, antennas, tilt, azimuth, rru, rrh, sector, swap, vswr, feeder, dismantle]

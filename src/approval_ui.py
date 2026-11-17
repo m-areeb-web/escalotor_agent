@@ -58,7 +58,8 @@ BASE = """<!doctype html>
          animation:rot .8s linear infinite; flex:none } @keyframes rot { to { transform:rotate(360deg) } }
  .newbar { background:var(--warn-bg); color:var(--warn); border-radius:10px; padding:10px 16px; margin-bottom:16px }
  .newbar[hidden] { display:none }
- .crq { margin:8px 0; padding:8px 10px; border:1px solid var(--line); border-radius:6px } .newbar a { color:inherit; font-weight:600 }
+ .crq { margin:8px 0; padding:8px 10px; border:1px solid var(--line); border-radius:6px }
+ .crq-match td { background:var(--warn-bg) } .newbar a { color:inherit; font-weight:600 }
 </style></head><body>
 <header><a href="{{ url_for('index') }}">AI Escalator Agent</a>
  <a href="{{ url_for('inbox') }}">Inbox</a><a href="{{ url_for('tickets') }}">Tickets</a><a href="{{ url_for('sla') }}">SLA matrix</a><a href="{{ url_for('audit') }}">Audit log</a><span class="sp"></span>
@@ -133,15 +134,17 @@ BASE = """<!doctype html>
 
 CRQ_MACRO = """{% macro crq_box(c, open=False) %}{% if c is not none %}
 <details class="crq" {% if open %}open{% endif %}><summary><b>Recent CRQs on site {{ c.site }}</b>
- · {{ c.total }} found since {{ c.window_start[:10] }}{% if c.risky %} · <span style="color:var(--bad)">{{ c.risky }} FAILED/ROLLBACK</span>{% endif %}</summary>
-{% if c.crqs %}<div class="tablewrap"><table><tr><th>CRQ</th><th>Type</th><th>Activity</th><th>Scheduled</th><th>Status / result</th></tr>
-{% for x in c.crqs %}<tr><td>{{ x.crq_id }}</td><td>{{ x.change_type }}</td><td>{{ x.activity }}</td>
+ · {{ c.total }} found since {{ c.window_start[:10] }}{% if c.matches %} · <b style="color:var(--accent)">{{ c.matches }} match the reported issue</b>{% endif %}{% if c.risky %} · <span style="color:var(--bad)">{{ c.risky }} FAILED/ROLLBACK</span>{% endif %}</summary>
+<div class="muted">Reported issue type: {{ c.issue_types|join(', ') if c.issue_types else 'not recognised from the ticket text, so no CRQ is marked' }}</div>
+{% if c.crqs %}<div class="tablewrap"><table><tr><th>CRQ</th><th>Type</th><th>Activity</th><th>Scheduled</th><th>Status / result</th><th>Matches the issue?</th></tr>
+{% for x in c.crqs %}<tr {% if x.match %}class="crq-match"{% endif %}><td>{{ x.crq_id }}</td><td>{{ x.change_type }}</td><td>{{ x.activity }}</td>
 <td class="muted">{{ (x.sched_start or '')[:16].replace('T', ' ') }}{% if x.sched_end %} → {{ x.sched_end[:16].replace('T', ' ') }}{% endif %}</td>
-<td {% if x.activity_result in ('FAILED', 'ROLLBACK') %}style="color:var(--bad);font-weight:600"{% endif %}>{{ x.status }}{% if x.activity_result %} / {{ x.activity_result }}{% endif %}</td></tr>{% endfor %}
+<td {% if x.activity_result in ('FAILED', 'ROLLBACK') %}style="color:var(--bad);font-weight:600"{% endif %}>{{ x.status }}{% if x.activity_result %} / {{ x.activity_result }}{% endif %}</td>
+<td>{% if x.match %}<b>Yes</b> · {{ x.match }}{% else %}<span class="muted">–</span>{% endif %}</td></tr>{% endfor %}
 </table></div>{% if c.total > c.crqs|length %}<div class="muted">Showing {{ c.crqs|length }} of {{ c.total }}.</div>{% endif %}
 {% else %}<div class="muted">No CRQs found on this site in this period.</div>{% endif %}
 {% if c.unknown_site_crqs %}<div class="muted">Not certain: {{ c.unknown_site_crqs }} CRQs in this period list their sites only in an attachment that is not in the CRQ data.</div>{% endif %}
-<div class="muted">From the CRQ Analyst (scheduled times are local time). Window: {{ crq_days }} days before the ticket was opened until now.</div>
+<div class="muted">"Matches" means the work type can cause this kind of problem (config/crq_relevance.yaml); it is a hint for what to check first, not a confirmed cause. From the CRQ Analyst (scheduled times are local time). Window: {{ crq_days }} days before the ticket was opened until now.</div>
 </details>{% elif crq_unavailable %}<div class="muted" style="margin:6px 0">CRQ check unavailable (is the CRQ Analyst running?).</div>{% endif %}{% endmacro %}
 """
 
