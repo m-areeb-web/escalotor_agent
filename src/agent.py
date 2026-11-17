@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 from .ai_provider import AIError, get_provider
 from .classifier import classify_email
+from .crq_lookup import CRQLookup
 from .config import Config
 from .email_client import EmailError, get_email_client
 from .email_text import clean_body
@@ -43,12 +44,15 @@ def _is_bounce(msg: dict) -> bool:
 
 
 class Agent:
-    def __init__(self, cfg: Config, *, storage: Storage | None = None, ai=None, email=None, tickets=None):
+    def __init__(self, cfg: Config, *, storage: Storage | None = None, ai=None, email=None, tickets=None,
+                 crq: CRQLookup | None = None):
         self.cfg = cfg
         self.store = storage or Storage(cfg.db_path)
         self._ai = ai
         self.email = email or get_email_client(cfg)
         self.tickets = tickets or get_ticket_source(cfg)
+        # Recent planned work (CRQs) on the ticket's site, from the CRQ Analyst. Optional, read-only.
+        self.crq = crq or CRQLookup(cfg.settings)
         self.allowed = cfg.allowed_recipients()
         # DEMO MODE (settings.yaml agent.demo_reply_to_any_sender): anyone who emails about a ticket is
         # treated like the Back Office, and replies may go back to that sender. Escalations still only
@@ -244,6 +248,7 @@ class Agent:
                 self.ai, ticket=ticket, kind="reply", purpose_key=intent,
                 history=self.store.ticket_history(tt, self.cfg.settings["history"]["max_emails_in_prompt"]),
                 signature=self.cfg.settings["agent"]["signature"], inbound=msg, classification=result,
+                extra_note=self._crq_email_note(ticket),
             )
         except AIError as e:
             outcome, attempts = self._ai_failed(msg, email_id, attempts, tt, str(e), "drafting")
@@ -268,6 +273,15 @@ class Agent:
         )
         self.store.audit("agent", "draft_created", tt, draft_id=draft_id, kind="reply", intent=intent)
         return "flagged" if review_reason else "drafts"
+
+    def _crq_email_note(self, ticket: dict) -> str | None:
+        """Code-written CRQ note for a drafted email, when enabled in settings.yaml (crq)."""
+        if not self.crq.enabled or not self.crq.s["add_note_to_emails"]:
+            return None
+        result = self.crq.for_ticket(ticket)
+        if result is None and self.crq.last_error:
+            self.store.audit("agent", "crq_lookup_failed", ticket.get("tt_number"), error=self.crq.last_error)
+        return self.crq.email_note(result)
 
     _NO_REPLY_SENDER = re.compile(r"^(no-?reply|do-?not-?reply|notifications?|newsletter|news|marketing)[\w.+-]*@|"
                                   r"@(accountprotection\.microsoft\.com|email\.microsoft\.com)$", re.IGNORECASE)
@@ -420,6 +434,8 @@ class Agent:
                 self.ai, ticket=ticket, kind=action.kind, purpose_key=action.kind, level=action.level,
                 history=self.store.ticket_history(tt, self.cfg.settings["history"]["max_emails_in_prompt"]),
                 signature=self.cfg.settings["agent"]["signature"],
+                # A resolved ticket's closure check is not about finding the cause.
+                extra_note=self._crq_email_note(ticket) if action.kind != "closure_check" else None,
             )
         except AIError as e:
             self.store.audit("agent", "draft_failed", tt, kind=action.kind, error=str(e))

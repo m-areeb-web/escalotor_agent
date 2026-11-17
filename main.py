@@ -35,8 +35,8 @@ def seed(cfg) -> None:
     bo = cfg.recipients_for("Back Office RF", 1)[0]
     mock = MockEmailClient(cfg.root)
     samples = [
-        (bo, "RE: TT-100235 | W2258 | Low throughput",
-         "Hi team,\n\nWe are investigating TT-100235. Initial checks show high PRB utilisation on W2258_1. "
+        (bo, "RE: TT-100235 | W2757 | Low throughput",
+         "Hi team,\n\nWe are investigating TT-100235. Initial checks show high PRB utilisation on W2757_1. "
          "Field team visit is planned and we expect resolution by 2026-11-12.\n\nThanks,\nBack Office RF"),
         (bo, "TT-100237 resolved",
          "Hello,\n\nThe interference issue on W2200_1 (TT-100237) has been resolved after replacing the "

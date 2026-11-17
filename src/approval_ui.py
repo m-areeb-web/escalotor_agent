@@ -13,6 +13,7 @@ from flask import Flask, abort, flash, jsonify, redirect, render_template_string
 
 from .agent import Agent
 from .config import Config
+from .crq_lookup import is_risky
 from .sla import sla_status
 from .timeutil import utcnow
 from .worker import AgentLock, AgentWorker
@@ -56,7 +57,8 @@ BASE = """<!doctype html>
  .spin { width:18px; height:18px; border:3px solid var(--line); border-top-color:var(--accent); border-radius:50%;
          animation:rot .8s linear infinite; flex:none } @keyframes rot { to { transform:rotate(360deg) } }
  .newbar { background:var(--warn-bg); color:var(--warn); border-radius:10px; padding:10px 16px; margin-bottom:16px }
- .newbar[hidden] { display:none } .newbar a { color:inherit; font-weight:600 }
+ .newbar[hidden] { display:none }
+ .crq { margin:8px 0; padding:8px 10px; border:1px solid var(--line); border-radius:6px } .newbar a { color:inherit; font-weight:600 }
 </style></head><body>
 <header><a href="{{ url_for('index') }}">AI Escalator Agent</a>
  <a href="{{ url_for('inbox') }}">Inbox</a><a href="{{ url_for('tickets') }}">Tickets</a><a href="{{ url_for('sla') }}">SLA matrix</a><a href="{{ url_for('audit') }}">Audit log</a><span class="sp"></span>
@@ -129,7 +131,21 @@ BASE = """<!doctype html>
 </script>
 </body></html>"""
 
-INDEX = """
+CRQ_MACRO = """{% macro crq_box(c, open=False) %}{% if c is not none %}
+<details class="crq" {% if open %}open{% endif %}><summary><b>Recent CRQs on site {{ c.site }}</b>
+ · {{ c.total }} found since {{ c.window_start[:10] }}{% if c.risky %} · <span style="color:var(--bad)">{{ c.risky }} FAILED/ROLLBACK</span>{% endif %}</summary>
+{% if c.crqs %}<div class="tablewrap"><table><tr><th>CRQ</th><th>Type</th><th>Activity</th><th>Scheduled</th><th>Status / result</th></tr>
+{% for x in c.crqs %}<tr><td>{{ x.crq_id }}</td><td>{{ x.change_type }}</td><td>{{ x.activity }}</td>
+<td class="muted">{{ (x.sched_start or '')[:16].replace('T', ' ') }}{% if x.sched_end %} → {{ x.sched_end[:16].replace('T', ' ') }}{% endif %}</td>
+<td {% if x.activity_result in ('FAILED', 'ROLLBACK') %}style="color:var(--bad);font-weight:600"{% endif %}>{{ x.status }}{% if x.activity_result %} / {{ x.activity_result }}{% endif %}</td></tr>{% endfor %}
+</table></div>{% if c.total > c.crqs|length %}<div class="muted">Showing {{ c.crqs|length }} of {{ c.total }}.</div>{% endif %}
+{% else %}<div class="muted">No CRQs found on this site in this period.</div>{% endif %}
+{% if c.unknown_site_crqs %}<div class="muted">Not certain: {{ c.unknown_site_crqs }} CRQs in this period list their sites only in an attachment that is not in the CRQ data.</div>{% endif %}
+<div class="muted">From the CRQ Analyst (scheduled times are local time). Window: {{ crq_days }} days before the ticket was opened until now.</div>
+</details>{% elif crq_unavailable %}<div class="muted" style="margin:6px 0">CRQ check unavailable (is the CRQ Analyst running?).</div>{% endif %}{% endmacro %}
+"""
+
+INDEX = CRQ_MACRO + """
 <div class="card stats">
  <div class="stat"><b>{{ stats.pending }}</b><span class="muted">Drafts awaiting approval</span></div>
  <div class="stat"><b>{{ review|length }}</b><span class="muted">Emails needing a decision</span></div>
@@ -152,6 +168,7 @@ INDEX = """
   <span class="muted">created {{ d.created_at }}</span></div>
  {% if d.needs_attention %}<div class="warn">{{ d.needs_attention }}</div>{% endif %}
  {% if d.error %}<div class="warn">Last send attempt failed: {{ d.error }}</div>{% endif %}
+ {% if d.tt_number != '-' %}{{ crq_box(d.crq) }}{% endif %}
  {% if d.source %}<details><summary>Email this replies to (from {{ d.source.sender }}, intent: {{ d.source.intent }})</summary>
    <pre>{{ d.source.subject }}
 
@@ -213,11 +230,12 @@ TICKETS = """
 </table></div>
 """
 
-TICKET = """
+TICKET = CRQ_MACRO + """
 <h2>{{ t.tt_number if t else tt }}</h2>
 {% if t %}<div class="card"><div class="row"><span class="pill">{{ t.status }}</span><span class="pill">{{ t.priority }}</span>
 <span class="muted">{{ t.assignment_group }} · SLA due {{ t.sla_due }}</span></div>
-<p>{{ t.description }}</p><div class="muted">Site {{ t.site_id }} · Cell {{ t.cell_id }} · created {{ t.created_at }}</div></div>
+<p>{{ t.description }}</p><div class="muted">Site {{ t.site_id }} · Cell {{ t.cell_id }} · created {{ t.created_at }}</div>
+{{ crq_box(crq, open=True) }}</div>
 {% else %}<div class="card warn">Not found in Remedy.</div>{% endif %}
 <h3>Communication history</h3>
 {% for e in history %}<div class="card"><div class="row"><span class="pill">{{ 'sent' if e.direction == 'out' else 'received' }}</span>
@@ -311,8 +329,20 @@ def create_app(cfg: Config, agent: Agent | None = None, watch: bool = True) -> F
     else:
         watcher.disabled("Background checks are off")
 
+    def crq_for(ticket: dict | None) -> dict | None:
+        """CRQ box data for a ticket, or None (setting off, no site, or CRQ Analyst unreachable)."""
+        if not ticket or not agent.crq.enabled or not agent.crq.s["show_on_ticket_page"]:
+            return None
+        r = agent.crq.for_ticket(ticket)
+        if r is not None:
+            r = {**r, "risky": sum(1 for c in r["crqs"] if is_risky(c))}
+        return r
+
     def page(template: str, **ctx) -> str:
         ctx.setdefault("kind_names", KIND_NAMES)
+        ctx.setdefault("crq_days", agent.crq.s["lookback_days"])
+        ctx.setdefault("crq_unavailable", agent.crq.enabled and agent.crq.s["show_on_ticket_page"]
+                       and agent.crq.last_error is not None)
         content = render_template_string(template, **ctx)
         return render_template_string(BASE, content=content, cfg=cfg, watch_version=watcher.status()["version"],
                                       demo_mode=agent.demo_mode)
@@ -325,6 +355,7 @@ def create_app(cfg: Config, agent: Agent | None = None, watch: bool = True) -> F
         drafts = agent.store.drafts(status="pending")
         for d in drafts:
             d["source"] = agent.store.get_email(d["source_email_id"]) if d["source_email_id"] else None
+            d["crq"] = crq_for(agent.tickets.get(d["tt_number"])) if d["tt_number"] != "-" else None
         # Flagged list = only emails that still need a decision. Emails that already have a draft
         # (waiting above) or were answered (listed under "Replied emails") are not repeated here.
         review = [e for e in agent.store.emails_needing_review() if not agent.store.has_draft_for_email(e["id"])]
@@ -345,7 +376,8 @@ def create_app(cfg: Config, agent: Agent | None = None, watch: bool = True) -> F
 
     @app.get("/ticket/<tt>")
     def ticket(tt):
-        return page(TICKET, tt=tt, t=agent.tickets.get(tt), history=agent.store.ticket_history(tt),
+        t = agent.tickets.get(tt)
+        return page(TICKET, tt=tt, t=t, crq=crq_for(t), history=agent.store.ticket_history(tt),
                     audit=agent.store.audit_entries(tt))
 
     @app.get("/status")

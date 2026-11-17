@@ -64,3 +64,24 @@ followup:
 history:
   # How many previous emails on a ticket are given to the AI as context.
   max_emails_in_prompt: 6
+
+# ---------------------------------------------------------------------------
+# CRQ CHECK - recent planned work (CRQs) on the ticket's site, from the CRQ Analyst.
+# A recent change is the most common cause of a new fault. Read-only; if the CRQ Analyst is not
+# running, the agent works as before without the CRQ information.
+# Start it with: python -m crq_rag.web   (in the crq_rag_pipeline project)
+# ---------------------------------------------------------------------------
+crq:
+  enabled: true
+  url: "http://127.0.0.1:8765"
+  # Look from this many days before the ticket was opened until now.
+  # PLACEHOLDER until the client confirms. Note: the CRQ export ends on 11 Nov 2026.
+  lookback_days: 7
+  # "Recent CRQs on this site" box on the ticket page and on drafts.
+  show_on_ticket_page: true
+  # One code-written note in drafted emails (only when CRQs are found).
+  # OFF until the client confirms they want it in emails.
+  add_note_to_emails: false
+  max_in_email: 3
+  timeout_seconds: 3
+  cache_minutes: 10

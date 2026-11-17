@@ -61,8 +61,9 @@ def get_ticket_source(cfg: Config) -> FakeRemedy:
 def seed_fake_tickets(path: Path) -> list[dict]:
     """Write a fresh set of fake tickets with times relative to *now*, covering each rule.
     Sites are real sites from the CRQ data (W####, cells W####_N), so the CRQ lookup finds real
-    planned work on them: W5634, W2258 and W2200 have CRQs in early/mid Nov 2026; W6102 and
-    W5373 have none then (shows the "no recent CRQs" case).
+    planned work on them: W5634, W2757 and W2200 have CRQs on 11-12 Nov 2026; W6102 and W5373
+    have none then (shows the "no recent CRQs" case). The CRQ export ends on 11 Nov 2026, so with
+    a 7-day lookback these demo tickets stop finding CRQs from about 19 Nov 2026.
     They have no sla_due of their own: deadlines come from the SLA matrix (created + resolve_within),
     so changing the matrix changes the deadlines. Comments assume the default matrix values."""
     now = utcnow()
@@ -79,7 +80,7 @@ def seed_fake_tickets(path: Path) -> list[dict]:
             "closed_at": None,
         },
         {   # High, due in 3h (< 4h) -> reminder
-            "tt_number": "TT-100235", "site_id": "W2258", "cell_id": "W2258_1",
+            "tt_number": "TT-100235", "site_id": "W2757", "cell_id": "W2757_1",
             "description": "Low throughput on LTE cell during busy hour (avg 4 Mbps vs 15 Mbps baseline).",
             "priority": "High", "status": "In Progress", "assignment_group": "Back Office RF",
             "assigned_person": "Back Office Engineer", "created_at": t(-21), "last_update_at": t(-2),

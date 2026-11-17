@@ -21,6 +21,7 @@ def cfg(tmp_path):
     import copy
     settings = copy.deepcopy(base.settings)
     settings["agent"]["demo_reply_to_any_sender"] = False      # tests check the strict SRS rule
+    settings["crq"] = {**settings.get("crq", {}), "enabled": False}   # offline: no CRQ Analyst calls
     c = replace(base, settings=settings, root=tmp_path, ai_provider="rules", email_provider="mock",
                 my_address="optimization.poc@outlook.com")
     seed_fake_tickets(c.tickets_path)
