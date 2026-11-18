@@ -87,10 +87,7 @@ def build_prompt(ticket: dict, purpose: str, history: list[dict], level: int | N
 
 
 def draft_email(ai, *, ticket: dict, kind: str, purpose_key: str, history: list[dict], signature: str,
-                level: int = 1, inbound: dict | None = None, classification: dict | None = None,
-                extra_note: str | None = None) -> dict:
-    """AI-written subject/body, then code-written `extra_note` (e.g. the CRQ check) and the signature.
-    The note is added after the AI step, so the AI can neither change nor invent its content."""
+                level: int = 1, inbound: dict | None = None, classification: dict | None = None) -> dict:
     purpose = PURPOSES[purpose_key]
     prompt = build_prompt(ticket, purpose, history, level, inbound, classification)
     result = ai.generate_json(SYSTEM, prompt, task="draft",
@@ -113,5 +110,4 @@ def draft_email(ai, *, ticket: dict, kind: str, purpose_key: str, history: list[
     if tt not in body:
         warnings.append("Draft does not mention the TT number.")
 
-    note = f"\n\n{extra_note.strip()}" if extra_note and extra_note.strip() else ""
-    return {"subject": subject, "body": f"{body}{note}\n\n{signature.strip()}", "warnings": warnings}
+    return {"subject": subject, "body": f"{body}\n\n{signature.strip()}", "warnings": warnings}

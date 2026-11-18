@@ -33,7 +33,6 @@ def cfg(tmp_path):
     base = load_config()
     settings = copy.deepcopy(base.settings)
     settings["agent"]["demo_reply_to_any_sender"] = False      # tests check the strict SRS rule
-    settings["crq"] = {**settings.get("crq", {}), "enabled": False}   # offline: no CRQ Analyst calls
     c = replace(base, settings=settings, root=tmp_path, ai_provider="rules", email_provider="mock",
                 my_address="team@test.local")
     seed_fake_tickets(c.tickets_path)
@@ -201,7 +200,7 @@ def test_ticket_number_in_another_format_is_matched(agent, cfg):
 
 
 def test_ticket_found_by_cell_name(agent, cfg):
-    agent.email.add_message(bo(cfg), "Drop issue", "The call drop problem on W5634_2 is still under investigation.")
+    agent.email.add_message(bo(cfg), "Drop issue", "The call drop problem on LHR-0451-2 is still under investigation.")
     agent.process_inbox()
     assert emails(agent)[0]["tt_number"] == "TT-100234"
 

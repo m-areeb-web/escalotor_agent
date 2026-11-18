@@ -60,10 +60,6 @@ def get_ticket_source(cfg: Config) -> FakeRemedy:
 
 def seed_fake_tickets(path: Path) -> list[dict]:
     """Write a fresh set of fake tickets with times relative to *now*, covering each rule.
-    Sites are real sites from the CRQ data (W####, cells W####_N), so the CRQ lookup finds real
-    planned work on them: W5634, W2757 and W2200 have CRQs on 11-12 Nov 2026; W6102 and W5373
-    have none then (shows the "no recent CRQs" case). The CRQ export ends on 11 Nov 2026, so with
-    a 7-day lookback these demo tickets stop finding CRQs from about 19 Nov 2026.
     They have no sla_due of their own: deadlines come from the SLA matrix (created + resolve_within),
     so changing the matrix changes the deadlines. Comments assume the default matrix values."""
     now = utcnow()
@@ -73,42 +69,42 @@ def seed_fake_tickets(path: Path) -> list[dict]:
 
     tickets = [
         {   # High, due in 12h, quiet 9h (> 8h) -> follow-up
-            "tt_number": "TT-100234", "site_id": "W5634", "cell_id": "W5634_2",
+            "tt_number": "TT-100234", "site_id": "LHR-0451", "cell_id": "LHR-0451-2",
             "description": "High call drop rate (3.8%) on cell, above 2% threshold for 3 consecutive days.",
             "priority": "High", "status": "Assigned", "assignment_group": "Back Office RF",
             "assigned_person": None, "created_at": t(-12), "last_update_at": t(-9),
             "closed_at": None,
         },
         {   # High, due in 3h (< 4h) -> reminder
-            "tt_number": "TT-100235", "site_id": "W2757", "cell_id": "W2757_1",
+            "tt_number": "TT-100235", "site_id": "KHI-1120", "cell_id": "KHI-1120-1",
             "description": "Low throughput on LTE cell during busy hour (avg 4 Mbps vs 15 Mbps baseline).",
             "priority": "High", "status": "In Progress", "assignment_group": "Back Office RF",
             "assigned_person": "Back Office Engineer", "created_at": t(-21), "last_update_at": t(-2),
             "closed_at": None,
         },
         {   # Critical, deadline passed 6h ago -> escalation to team lead, then manager
-            "tt_number": "TT-100236", "site_id": "W6102", "cell_id": "W6102_3",
+            "tt_number": "TT-100236", "site_id": "ISB-0077", "cell_id": "ISB-0077-3",
             "description": "Cell unavailable intermittently; availability 91% over last 48 hours.",
             "priority": "Critical", "status": "Pending", "assignment_group": "Back Office Transmission",
             "assigned_person": None, "created_at": t(-10), "last_update_at": t(-8),
             "closed_at": None,
         },
         {   # Resolved 30h ago but not closed (> 24h) -> closure check
-            "tt_number": "TT-100237", "site_id": "W2200", "cell_id": "W2200_1",
+            "tt_number": "TT-100237", "site_id": "LHR-0612", "cell_id": "LHR-0612-1",
             "description": "High interference (UL RSSI -95 dBm) on cell.",
             "priority": "Medium", "status": "Resolved", "assignment_group": "Back Office RF",
             "assigned_person": "Back Office Engineer", "created_at": t(-60), "last_update_at": t(-30),
             "closed_at": None,
         },
         {   # Low, updated 1h ago, due in 110h -> nothing to do
-            "tt_number": "TT-100238", "site_id": "W5373", "cell_id": "W5373_2",
-            "description": "Handover failure rate 6% towards neighbour W5374.",
+            "tt_number": "TT-100238", "site_id": "MUL-0210", "cell_id": "MUL-0210-2",
+            "description": "Handover failure rate 6% towards neighbour MUL-0211.",
             "priority": "Low", "status": "In Progress", "assignment_group": "Back Office RF",
             "assigned_person": "Back Office Engineer", "created_at": t(-10), "last_update_at": t(-1),
             "closed_at": None,
         },
         {   # Closed -> stop
-            "tt_number": "TT-100239", "site_id": "W2828", "cell_id": "W2828_1",
+            "tt_number": "TT-100239", "site_id": "FSD-0033", "cell_id": "FSD-0033-1",
             "description": "VoLTE call setup failures above threshold.",
             "priority": "Medium", "status": "Closed", "assignment_group": "Back Office RF",
             "assigned_person": "Back Office Engineer", "created_at": t(-100), "last_update_at": t(-50),
