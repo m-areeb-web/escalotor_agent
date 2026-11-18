@@ -9,7 +9,7 @@ agent:
   # How often the follow-up / SLA / escalation rules run (minutes).
   poll_interval_minutes: 5
   # How often the inbox is checked for new emails (seconds) while `python main.py start` runs.
-  inbox_watch_seconds: 10
+  inbox_watch_seconds: 5
   # How Remedy ticket numbers look in emails. Matches TT-100234, TT100234, tt-100234.
   ticket_id_pattern: '\bTT-?\s?(\d{6})\b'
   # Below this AI confidence, an email is flagged for human review instead of auto-drafting.

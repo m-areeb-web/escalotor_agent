@@ -30,6 +30,11 @@ Rules:
 - matched_ticket must be one tt_number from the KNOWN TICKETS list, or null.
 - Only match when the email clearly points to that ticket: the same number (in any format), or the
   same site/cell together with the same kind of problem. If unsure, use null.
+- Compare numbers by their digits only: dashes, spaces, dots, slashes and prefixes do not matter.
+  "Ref 100-234", "100 234", "TT.100234" and "TT-100234" are the SAME ticket number.
+- is_ticket_related means the email is about network / ticket work at all, NOT whether it matches a
+  known ticket. An email about a site, cell, outage, KPI or fault that matches none of the known
+  tickets is still ticket related: set is_ticket_related true and matched_ticket null.
 - ticket_references: every ticket identifier written in the email, exactly as written.
 - If the email says it is about a ticket, an issue or work in progress ("ticket update", "working on
   it", "issue fixed", "any update on the ticket?") but does not say which one, it IS ticket related:
