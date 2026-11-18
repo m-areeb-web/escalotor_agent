@@ -5,17 +5,45 @@
 #
 # For the POC, replace these with your test accounts. It is fine for several
 # levels to point at the same test address.
+#
+# HANDOVERS: when a reply says the work is "pending on" / "waiting for" another team or person,
+# the agent looks that name up here (team name, a team's `aliases`, or a person's name/aliases).
+# If found, follow-ups and escalations go to THAT team / person from then on, with the ticket's
+# own team in CC. If not found, the email is flagged so a person can add them here.
 
 assignment_groups:
   Back Office RF:
-    level_1: ["areebmanzoor314@gmail.com", "itsbossgg@gmail.com"]   # the assigned Back Office team
+    level_1: ["areebmanzoor314@gmail.com"]   # the assigned Back Office team (test: Areeb)
     level_2: ["areebmanzoor314@gmail.com"]      # team lead
     level_3: ["areebmanzoor314@gmail.com"]   # manager
 
   Back Office Transmission:
+    aliases: ["transmission", "tx team"]
     level_1: ["areebmanzoor314@gmail.com", "itsbossgg@gmail.com"]
+    level_2: ["areebmanzoor314@gmail.com"]
+    level_3: ["areebmanzoor314@gmail.com"]
+
+  # Other teams a ticket can be handed over to. Not Remedy assignment groups, but the agent
+  # can chase and escalate them in the same way.
+  Performance Team:
+    aliases: ["performance", "performance optimization", "perf team"]
+    level_1: ["ausaf.gill2003@gmail.com", "haidermanzoor901@gmail.com"]   # test: Ausaf, Haider
+    level_2: ["areebmanzoor314@gmail.com"]
+    level_3: ["areebmanzoor314@gmail.com"]
+
+  Field Operations:
+    aliases: ["field ops", "field team", "field engineers", "site team"]
+    level_1: ["itsbossgg@gmail.com"]
     level_2: ["areebmanzoor314@gmail.com"]
     level_3: ["areebmanzoor314@gmail.com"]
 
 # Used when a ticket's assignment group is not listed above.
 default_group: Back Office RF
+
+# Individual people a ticket can be waiting on. Follow-ups go to the person; escalations go up
+# their `team` ladder (level 2, level 3), or the ticket's own team if no team is given.
+people:
+  - name: "Field Engineer Test"
+    aliases: ["field engineer"]
+    email: "itsbossgg@gmail.com"
+    team: "Field Operations"

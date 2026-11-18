@@ -89,7 +89,7 @@ Or by hand:
 
 `start` runs the whole agent:
 
-- **Inbox** checked every `inbox_watch_seconds` (default 10). New emails are processed straight
+- **Inbox** checked every `inbox_watch_seconds` (default 5). New emails are processed straight
   away; the page shows "Fetching N new emails…" and then refreshes itself (not while you are
   editing a draft).
 - **Follow-up / SLA / escalation rules** run every `poll_interval_minutes` (default 5).
@@ -120,6 +120,28 @@ under **SLA matrix**. Default values (hours):
 | Low | 120 | 48 | 12 | at deadline | +48 after deadline | every 48 |
 
 A ticket's own SLA date from Remedy is used when present; otherwise deadline = created + "resolve within".
+
+## Handovers: the agent chases whoever the ticket is waiting on
+
+When a reply says the work is *"pending on the Performance team"*, *"waiting for Field Ops"* or
+*"depends on Ali"*, the agent:
+
+1. **Records who the ticket is waiting on.** The name is looked up in `config/escalation.yaml`
+   (team names, team `aliases`, and the `people` list).
+2. **Sends a first "handover" email to them**, with the ticket's own team in CC.
+3. **Points follow-ups, reminders and escalations at them from then on.** Escalations go to
+   *their* team lead (level 2), then *their* manager (level 3). A new owner first gets the normal
+   "follow up if quiet" time before anyone goes over their head.
+4. **Follows the chain.** If the Performance team then says "now waiting for Field Ops", the
+   ticket moves again. If someone says it's back with the ticket's own team, follow-ups go back
+   there.
+5. **Never guesses addresses.** If the name isn't in `escalation.yaml`, the email is flagged
+   ("Ticket is now waiting on 'X', who is not in escalation.yaml") and follow-ups stay with the
+   current team. Only trusted senders can move a ticket, and suspicious emails never do.
+
+Remedy stays the source of truth: if a ticket is reassigned there, the email handover is cleared.
+The **Tickets** page has an "Action with" column. Each ticket's page shows the handover and has a
+**Move back** button. Every move is recorded in the audit trail.
 
 ## Configuration
 

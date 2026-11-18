@@ -77,9 +77,83 @@ class Config:
         """Every address in escalation.yaml. The agent may only send to these."""
         allowed: set[str] = set()
         for group in self.escalation.get("assignment_groups", {}).values():
-            for addresses in (group or {}).values():
-                allowed.update(a.strip().lower() for a in (addresses or []) if a and a.strip())
+            for key, addresses in (group or {}).items():
+                if key.startswith("level_"):
+                    allowed.update(a.strip().lower() for a in (addresses or []) if a and a.strip())
+        for p in self._people():
+            allowed.add(p["email"])
         return allowed
+
+    # ---- handovers: who is the ticket waiting on? ------------------------------
+    def _people(self) -> list[dict]:
+        out = []
+        for p in self.escalation.get("people") or []:
+            email = (p.get("email") or "").strip().lower()
+            if p.get("name") and email:
+                out.append({**p, "email": email})
+        return out
+
+    def owner(self, key: str | None) -> Owner | None:
+        """The team or person stored as `team:<name>` / `person:<name>` in the ticket state."""
+        if not key or ":" not in key:
+            return None
+        kind, name = key.split(":", 1)
+        if kind == "team" and name in self.escalation.get("assignment_groups", {}):
+            return Owner("team", key, name, name)
+        if kind == "person":
+            for p in self._people():
+                if p["name"] == name:
+                    return Owner("person", key, name, p.get("team"), p["email"])
+        return None
+
+    def find_owner(self, text: str | None) -> Owner | None:
+        """Match a free-text name from an email ('the performance team', 'Ali') to a team or person
+        in escalation.yaml. Returns None when nothing matches or two different entries match equally."""
+        name = _norm(text)
+        if not name:
+            return None
+        candidates: list[tuple[str, Owner]] = []
+        for p in self._people():
+            o = Owner("person", f"person:{p['name']}", p["name"], p.get("team"), p["email"])
+            candidates += [(_norm(n), o) for n in [p["name"], *(p.get("aliases") or [])]]
+        for g, spec in self.escalation.get("assignment_groups", {}).items():
+            o = Owner("team", f"team:{g}", g, g)
+            candidates += [(_norm(n), o) for n in [g, *((spec or {}).get("aliases") or [])]]
+
+        def hit(c: str) -> bool:   # same words, or the contact's words appear whole inside the text
+            return bool(c) and (c == name or f" {c} " in f" {name} ")
+
+        hits = [(len(c), o) for c, o in candidates if hit(c)]
+        if any(o.kind == "person" for _, o in hits):   # "Ali from Field Ops" means Ali, not the whole team
+            hits = [(n, o) for n, o in hits if o.kind == "person"]
+        if not hits:
+            return None
+        best = max(n for n, _ in hits)
+        owners = {o.key: o for n, o in hits if n == best}
+        return next(iter(owners.values())) if len(owners) == 1 else None
+
+    def owner_recipients(self, owner: Owner, level: int, ticket_group: str | None) -> list[str]:
+        """Who to email at a given level for a handed-over ticket."""
+        if owner.kind == "person" and level == 1:
+            return [owner.email]
+        return self.recipients_for(owner.team or ticket_group, level)
+
+
+@dataclass(frozen=True)
+class Owner:
+    kind: str                 # team | person
+    key: str                  # stored in ticket_state.waiting_on_key
+    label: str                # shown to people and to the AI
+    team: str | None          # escalation ladder to use (a group in escalation.yaml)
+    email: str | None = None  # person only
+
+
+_FILLER = {"the", "team", "group", "dept", "department", "mr", "ms", "sir", "from", "of"}
+
+
+def _norm(text: str | None) -> str:
+    words = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower()).split()
+    return " ".join(w for w in words if w not in _FILLER)
 
 
 def load_config(root: Path = ROOT) -> Config:

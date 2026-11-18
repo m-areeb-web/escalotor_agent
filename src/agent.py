@@ -225,6 +225,16 @@ class Agent:
         if result.get("needs_human_review"):
             reasons.append(result["review_reason"])
 
+        # Handover: "this is pending on the Performance team / on Ali". Only trusted senders can move
+        # a ticket, and only to contacts in escalation.yaml (never to addresses taken from the email).
+        handoff_note = handoff_info = None
+        suspicious_now = any("suspicious" in (r or "").lower() for r in reasons)
+        if ticket is not None and result.get("waiting_on") and self._trusted_sender(msg["sender"]) \
+                and not suspicious_now:
+            handoff_note, handoff_info, flag = self._record_handoff(ticket, msg, str(result["waiting_on"]))
+            if flag:
+                reasons.append(flag)
+
         review_reason = "; ".join(r for r in reasons if r) or None
         record = dict(tt_number=tt, intent=result.get("intent"), confidence=result.get("confidence"),
                       extracted=result, status="needs_review" if review_reason else "processed",
@@ -244,6 +254,7 @@ class Agent:
                 self.ai, ticket=ticket, kind="reply", purpose_key=intent,
                 history=self.store.ticket_history(tt, self.cfg.settings["history"]["max_emails_in_prompt"]),
                 signature=self.cfg.settings["agent"]["signature"], inbound=msg, classification=result,
+                note=handoff_note,
             )
         except AIError as e:
             outcome, attempts = self._ai_failed(msg, email_id, attempts, tt, str(e), "drafting")
@@ -260,7 +271,7 @@ class Agent:
         to = [msg["sender"]]
         demo_note = (f"Demo mode: {msg['sender']} is not in escalation.yaml; replying to them anyway"
                      if msg["sender"] not in self.allowed else None)
-        notes = [n for n in [review_reason, demo_note, *draft["warnings"]] if n]
+        notes = [n for n in [review_reason, handoff_info, demo_note, *draft["warnings"]] if n]
         draft_id = self.store.create_draft(
             tt_number=tt, kind="reply", level=1, to_addrs=to, cc_addrs=[], subject=draft["subject"],
             body=draft["body"], reply_to_message_id=msg["id"], source_email_id=email_id,
@@ -268,6 +279,59 @@ class Agent:
         )
         self.store.audit("agent", "draft_created", tt, draft_id=draft_id, kind="reply", intent=intent)
         return "flagged" if review_reason else "drafts"
+
+    def _record_handoff(self, ticket: dict, msg: dict, name: str):
+        """The email says the next action is with another team / person. Remember who, so follow-ups
+        and escalations go to them. Returns (note for the reply draft, info for the reviewer,
+        reason to flag the email or None)."""
+        tt, group = ticket["tt_number"], ticket.get("assignment_group")
+        state = self.store.ticket_state(tt)
+        when = msg["received_at"]
+        since = parse(state.get("waiting_on_since"))
+        if since and parse(when) and parse(when) < since:
+            return None, None, None   # older than the handover we already know about
+
+        owner = self.cfg.find_owner(name)
+        current = state.get("waiting_on_label") if state.get("waiting_on_key") else group
+        if owner is None:
+            # Can't reach them: keep chasing whoever we chase now, and ask a person to add the contact.
+            self.store.audit("agent", "handover_unknown_contact", tt, waiting_on=name, by=msg["sender"])
+            return (f"The sender says the next action is with {name}. Thank them and ask for a contact "
+                    f"or an expected date from {name}.", None,
+                    f"Ticket is now waiting on '{name}', who is not in escalation.yaml. Add them there so the "
+                    f"agent can chase them; until then follow-ups keep going to {current}")
+
+        if owner.kind == "team" and owner.team == group:
+            if state.get("waiting_on_key"):    # handed back to the ticket's own team
+                self.store.update_ticket_state(tt, waiting_on_key=None, waiting_on_label=None, waiting_on_since=when,
+                                               waiting_on_by=msg["sender"], handoff_contacted_at=None,
+                                               escalation_level=0, last_escalation_at=None, snoozed_until=None)
+                self.store.audit("agent", "action_moved", tt, frm=current, to=group, by=msg["sender"],
+                                 said=name)
+                return None, f"Action is back with {group}: follow-ups go to them again.", None
+            return None, None, None
+
+        if state.get("waiting_on_key") == owner.key:
+            return (f"The next action is with {owner.label}; we are already following up with them.", None, None)
+
+        self.store.update_ticket_state(tt, waiting_on_key=owner.key, waiting_on_label=owner.label,
+                                       waiting_on_since=when, waiting_on_by=msg["sender"], handoff_contacted_at=None,
+                                       escalation_level=0, last_escalation_at=None, reminder_sent=0,
+                                       snoozed_until=None)   # a pause on the old owner's emails ends here
+        self.store.audit("agent", "action_moved", tt, frm=current, to=owner.label, by=msg["sender"], said=name)
+        return (f"The sender says the next action is now with {owner.label}. Thank them and say we will "
+                f"follow up with {owner.label} directly and keep them in copy.",
+                f"Action moved from {current} to {owner.label}: follow-ups and escalations now go to "
+                f"{owner.label}, with {group} in CC.", None)
+
+    def clear_handoff(self, tt: str) -> None:
+        """Reviewer says the ticket is back with its own Remedy team."""
+        state = self.store.ticket_state(tt)
+        if not state.get("waiting_on_key"):
+            return
+        self.store.update_ticket_state(tt, waiting_on_key=None, waiting_on_label=None, handoff_contacted_at=None,
+                                       escalation_level=0, last_escalation_at=None)
+        self.store.audit("human", "handover_cleared", tt, was=state.get("waiting_on_label"))
 
     _NO_REPLY_SENDER = re.compile(r"^(no-?reply|do-?not-?reply|notifications?|newsletter|news|marketing)[\w.+-]*@|"
                                   r"@(accountprotection\.microsoft\.com|email\.microsoft\.com)$", re.IGNORECASE)
@@ -379,6 +443,19 @@ class Agent:
                     self.store.audit("agent", "monitoring_resumed", tt, status=ticket["status"])
                     state = self.store.ticket_state(tt)
 
+            # Remedy is the source of truth: if the ticket is reassigned there, an earlier email
+            # handover no longer applies.
+            group = ticket.get("assignment_group")
+            if state.get("last_group") != group:
+                if state.get("last_group") is not None and state.get("waiting_on_key"):
+                    self.store.update_ticket_state(tt, waiting_on_key=None, waiting_on_label=None,
+                                                   handoff_contacted_at=None, escalation_level=0,
+                                                   last_escalation_at=None)
+                    self.store.audit("agent", "handover_cleared", tt, was=state.get("waiting_on_label"),
+                                     reason=f"Remedy reassigned the ticket from {state['last_group']} to {group}")
+                self.store.update_ticket_state(tt, last_group=group)
+                state = self.store.ticket_state(tt)
+
             action = decide_action(ticket, state, now, self.cfg.settings)
             if action is None:
                 continue
@@ -391,11 +468,12 @@ class Agent:
                 continue
             # A waiting reply to the Back Office must not hold back an SLA escalation to management;
             # only another waiting automated email does. Follow-ups/reminders wait for any draft.
-            blocking = AUTO_KINDS if action.kind == "escalation" else None
+            # A handover email is not held back by a waiting reply either (that reply goes to someone else).
+            blocking = AUTO_KINDS if action.kind in ("escalation", "handoff") else None
             if self.store.has_pending_draft(tt, blocking):
                 stats["skipped_pending"] += 1   # duplicate prevention: human hasn't acted on the last one
                 continue
-            if self._create_auto_draft(ticket, action):
+            if self._create_auto_draft(ticket, action, state):
                 stats["drafts"] += 1
         self.store.audit("agent", "followups_checked", now=iso(now), **stats)
         return stats
@@ -408,10 +486,25 @@ class Agent:
                                         error="Ticket closed before approval")
         self.store.audit("agent", "monitoring_stopped", tt, reason="ticket closed")
 
-    def _create_auto_draft(self, ticket: dict, action: "Action") -> bool:
+    def _create_auto_draft(self, ticket: dict, action: "Action", state: dict | None = None) -> bool:
         tt, group = ticket["tt_number"], ticket.get("assignment_group")
-        to = self.cfg.recipients_for(group, action.level)
-        cc = [a for a in self.cfg.recipients_for(group, 1) if a not in to] if action.level > 1 else []
+        state = state or self.store.ticket_state(tt)
+        owner = self.cfg.owner(state.get("waiting_on_key"))
+        handover = None
+        if owner:
+            # The ticket is waiting on another team / person: chase them, keep the ticket's team in CC.
+            to = self.cfg.owner_recipients(owner, action.level, group)
+            pool = self.cfg.recipients_for(group, 1)
+            if action.level > 1:
+                pool = self.cfg.owner_recipients(owner, 1, group) + pool
+            cc = list(dict.fromkeys(a for a in pool if a not in to))
+            since = parse(state.get("waiting_on_since"))
+            handover = (f"The next action on this ticket is with {owner.label}, as reported by the ticket's team "
+                        f"({group}) on {since.strftime('%d %b %Y') if since else 'an earlier date'}. "
+                        f"Address this email to {owner.label}.")
+        else:
+            to = self.cfg.recipients_for(group, action.level)
+            cc = [a for a in self.cfg.recipients_for(group, 1) if a not in to] if action.level > 1 else []
         if not to:
             self.store.audit("agent", "draft_skipped", tt, reason=f"No level {action.level} recipients configured")
             return False
@@ -419,12 +512,17 @@ class Agent:
             draft = draft_email(
                 self.ai, ticket=ticket, kind=action.kind, purpose_key=action.kind, level=action.level,
                 history=self.store.ticket_history(tt, self.cfg.settings["history"]["max_emails_in_prompt"]),
-                signature=self.cfg.settings["agent"]["signature"],
+                signature=self.cfg.settings["agent"]["signature"], note=handover,
             )
         except AIError as e:
             self.store.audit("agent", "draft_failed", tt, kind=action.kind, error=str(e))
             return False
         notes = [action.reason, *draft["warnings"]]
+        if owner:
+            notes.insert(0, f"Action is with {owner.label} (not {group}), so this goes to them")
+        elif state.get("waiting_on_key"):
+            notes.insert(0, f"Ticket was handed to '{state.get('waiting_on_label')}', who is no longer in "
+                            f"escalation.yaml; sending to {group} instead")
         if action.level >= 2:
             notes.insert(0, f"High-impact: level {action.level} escalation to management")
         draft_id = self.store.create_draft(
@@ -499,6 +597,8 @@ class Agent:
             state_update.update(escalation_level=d["level"], last_escalation_at=now)
         if d["kind"] == "reminder":
             state_update["reminder_sent"] = 1
+        if d["kind"] == "handoff":
+            state_update["handoff_contacted_at"] = now
         self.store.update_ticket_state(d["tt_number"], **state_update)
         self.store.audit("human", "draft_approved", d["tt_number"], draft_id=draft_id, edited=bool(edited))
         self.store.audit("agent", "email_sent", d["tt_number"], draft_id=draft_id, kind=d["kind"], to=to, cc=cc)
@@ -580,10 +680,19 @@ def decide_action(ticket: dict, state: dict, now: datetime, settings: dict) -> A
             return Action("closure_check", 1, f"Resolved {waited:.0f}h ago but not closed")
         return None
 
+    # Handover: the ticket's team said the action is with another team / person -> first email to them.
+    owner = state.get("waiting_on_label") if state.get("waiting_on_key") else None
+    contacted = parse(state.get("handoff_contacted_at"))
+    if owner and not contacted:
+        return Action("handoff", 1, f"Action moved to {owner}; first email to them")
+
     sla_due = sla_deadline(ticket, settings)
 
     # SLA breached -> escalate per the matrix: team lead, then manager, then keep chasing the manager.
     if sla_due and now > sla_due:
+        # A team that has just taken over gets the normal follow-up time before we go over their head.
+        if owner and contacted and hours_between(now, contacted) < row["followup_if_quiet"]:
+            return None
         overdue = hours_between(now, sla_due)
         level_now = state.get("escalation_level") or 0
         max_level = rules["max_escalation_level"]

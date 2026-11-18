@@ -205,10 +205,11 @@ INDEX = """
 
 TICKETS = """
 <h2>Tickets (fake Remedy)</h2>
-<div class="card tablewrap"><table><tr><th>TT</th><th>Site / Cell</th><th>Priority</th><th>Status</th><th>SLA due</th><th>SLA</th><th>Escalation</th></tr>
+<div class="card tablewrap"><table><tr><th>TT</th><th>Site / Cell</th><th>Priority</th><th>Status</th><th>SLA due</th><th>SLA</th><th>Action with</th><th>Escalation</th></tr>
 {% for t in tickets %}<tr><td><a href="{{ url_for('ticket', tt=t.tt_number) }}">{{ t.tt_number }}</a></td>
 <td>{{ t.site_id }} / {{ t.cell_id }}</td><td>{{ t.priority }}</td><td>{{ t.status }}</td><td>{{ t.sla_due }}<div class="muted">from {{ t.sla_source }}</div></td>
 <td>{% set st = sla_state[t.tt_number] %}<span class="pill" {% if st.startswith('Overdue') %}style="color:var(--bad)"{% endif %}>{{ st }}</span></td>
+{% set w = states[t.tt_number] %}<td>{% if w.waiting_on_key %}<b>{{ w.waiting_on_label }}</b><div class="muted">handed over by {{ t.assignment_group }}</div>{% else %}{{ t.assignment_group }}{% endif %}</td>
 <td>{{ level_names.get(states[t.tt_number].escalation_level, '–') }}{% if states[t.tt_number].closed %} · monitoring stopped{% endif %}</td></tr>{% endfor %}
 </table></div>
 """
@@ -218,6 +219,11 @@ TICKET = """
 {% if t %}<div class="card"><div class="row"><span class="pill">{{ t.status }}</span><span class="pill">{{ t.priority }}</span>
 <span class="muted">{{ t.assignment_group }} · SLA due {{ t.sla_due }}</span></div>
 <p>{{ t.description }}</p><div class="muted">Site {{ t.site_id }} · Cell {{ t.cell_id }} · created {{ t.created_at }}</div></div>
+{% if state.waiting_on_key %}<div class="card warn"><b>Action is now with {{ state.waiting_on_label }}</b>
+<div class="muted">Reported by {{ state.waiting_on_by }} on {{ (state.waiting_on_since or '')[:16].replace('T', ' ') }} UTC.
+Follow-ups and escalations go to {{ state.waiting_on_label }}, with {{ t.assignment_group }} in CC.
+{% if state.handoff_contacted_at %}First emailed {{ state.handoff_contacted_at[:16].replace('T', ' ') }} UTC.{% else %}First email to them not sent yet.{% endif %}</div>
+<form method="post" action="{{ url_for('clear_handoff', tt=t.tt_number) }}" style="margin-top:8px"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button>Move back to {{ t.assignment_group }}</button></form></div>{% endif %}
 {% else %}<div class="card warn">Not found in Remedy.</div>{% endif %}
 <h3>Communication history</h3>
 {% for e in history %}<div class="card"><div class="row"><span class="pill">{{ 'sent' if e.direction == 'out' else 'received' }}</span>
@@ -346,7 +352,14 @@ def create_app(cfg: Config, agent: Agent | None = None, watch: bool = True) -> F
     @app.get("/ticket/<tt>")
     def ticket(tt):
         return page(TICKET, tt=tt, t=agent.tickets.get(tt), history=agent.store.ticket_history(tt),
-                    audit=agent.store.audit_entries(tt))
+                    audit=agent.store.audit_entries(tt), state=agent.store.ticket_state(tt))
+
+    @app.post("/ticket/<tt>/clear-handoff")
+    def clear_handoff(tt):
+        with lock:
+            agent.clear_handoff(tt)
+        flash(f"{tt}: follow-ups go to the ticket's own team again.", "ok")
+        return redirect(url_for("ticket", tt=tt))
 
     @app.get("/status")
     def status():

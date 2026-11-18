@@ -131,10 +131,17 @@ class RulesProvider:
                     intent, conf = name, 0.75
                     break
             date = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", body)
+            # "pending on the Performance team." / "waiting for Field Ops to ..." -> who the work is with now
+            hand = re.search(r"\b(?:pending|waiting|depend(?:s|ing|ent)?)\s+(?:on|for|upon)\s+(?:the\s+)?"
+                             r"([a-z][a-z .&-]{1,40}?)(?=\s+(?:to|for|before|and)\b|[.,;:!?\n]|$)", body)
+            waiting_on = hand.group(1).strip() if hand else None
+            if waiting_on in ("us", "you", "our side", "your side", "our end", "your end", "your team", "our team"):
+                waiting_on = None
             return {
                 "intent": intent, "confidence": conf, "tt_number": None, "site_id": None, "cell_id": None,
                 "issue_description": None, "investigation_status": None, "requested_action": None,
                 "responsible_team": None, "expected_resolution_date": date.group(1) if date else None,
+                "waiting_on": waiting_on,
                 "summary": (ctx.get("body") or "")[:160], "needs_human_review": intent == "Unclear",
                 "review_reason": "Could not determine intent" if intent == "Unclear" else None,
             }

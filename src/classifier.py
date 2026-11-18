@@ -36,7 +36,7 @@ _INTENT_LINES = "\n".join(
 
 EXTRACT_FIELDS = [
     "tt_number", "site_id", "cell_id", "issue_description", "investigation_status",
-    "requested_action", "responsible_team", "expected_resolution_date",
+    "requested_action", "responsible_team", "expected_resolution_date", "waiting_on",
 ]
 
 SYSTEM = f"""You analyse emails received by a telecom Network Optimization team about Remedy
@@ -52,6 +52,11 @@ Classify the email into exactly one of these intents (name: meaning, as defined 
 {_INTENT_LINES}
 Choose by the meaning above, not by matching words. If the email fits several, pick the one that
 best describes what the sender wants from us now. Use "Unclear" only if none fits.
+
+HANDOVER: if the sender says the next action is pending on / waiting for / depends on ANOTHER team
+or person (not the sender's own team), put that team or person's name in "waiting_on", exactly as
+written (e.g. "Performance team", "Transmission", "Ali from Field Ops"). Use null when the work stays
+with the sender, or when they only say it is pending without naming who.
 
 Extract details ONLY if they are stated in the email. Use null when not stated. Never guess or
 invent values. Dates must be ISO format YYYY-MM-DD.
@@ -71,6 +76,7 @@ Return ONLY a JSON object with these keys:
   "requested_action": string or null,
   "responsible_team": string or null,
   "expected_resolution_date": string or null,
+  "waiting_on": string or null,
   "summary": one-sentence summary of what the sender is saying,
   "needs_human_review": boolean,
   "review_reason": string or null

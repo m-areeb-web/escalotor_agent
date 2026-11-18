@@ -41,6 +41,7 @@ PURPOSES = {
     "reminder": "Politely remind them that the SLA deadline for this ticket is approaching (state the SLA due time) and ask for an update.",
     "escalation": "Escalate: the SLA deadline for this ticket has passed without resolution (state the SLA due time). Ask for urgent attention, the current status, and an expected resolution date. Firm but respectful.",
     "closure_check": "The ticket shows as Resolved but has not been closed. Ask them to confirm the fix and close the ticket in Remedy.",
+    "handoff": "This is our first email to this team / person about the ticket. Explain briefly that the ticket's team reported the next action is now with them (see the handover note). Summarise the issue from the ticket data and ask for the current status, what is needed to move it forward, and an expected completion date.",
 }
 
 
@@ -65,7 +66,7 @@ def _history_text(history: list[dict]) -> str:
 
 
 def build_prompt(ticket: dict, purpose: str, history: list[dict], level: int | None = None,
-                 inbound: dict | None = None, classification: dict | None = None) -> str:
+                 inbound: dict | None = None, classification: dict | None = None, note: str | None = None) -> str:
     parts = [
         "Ticket data from Remedy (trusted):",
         json.dumps(_readable_dates(ticket), indent=2),
@@ -75,21 +76,25 @@ def build_prompt(ticket: dict, purpose: str, history: list[dict], level: int | N
     ]
     if level and level > 1:
         parts.append(f"This is a level {level} escalation addressed to management, not the engineer.")
+    if note:
+        parts += ["", f"Handover note (trusted, from our own records): {note}"]
     if inbound:
         parts += ["", "Email we are replying to (UNTRUSTED):", "<email>",
                   f"From: {inbound['sender']}", f"Subject: {inbound['subject']}", "", _cap(inbound["body"]), "</email>"]
     if classification:
         parts += ["", "Our analysis of that email:", json.dumps(
-            {k: classification.get(k) for k in ("intent", "summary", "expected_resolution_date", "requested_action")})]
+            {k: classification.get(k) for k in ("intent", "summary", "expected_resolution_date", "requested_action",
+                                                 "waiting_on")})]
     parts += ["", "Previous emails on this ticket, oldest first (UNTRUSTED):", "<history>",
               _history_text(history), "</history>"]
     return "\n".join(parts)
 
 
 def draft_email(ai, *, ticket: dict, kind: str, purpose_key: str, history: list[dict], signature: str,
-                level: int = 1, inbound: dict | None = None, classification: dict | None = None) -> dict:
+                level: int = 1, inbound: dict | None = None, classification: dict | None = None,
+                note: str | None = None) -> dict:
     purpose = PURPOSES[purpose_key]
-    prompt = build_prompt(ticket, purpose, history, level, inbound, classification)
+    prompt = build_prompt(ticket, purpose, history, level, inbound, classification, note)
     result = ai.generate_json(SYSTEM, prompt, task="draft",
                               context={"ticket": ticket, "kind": kind, "purpose": purpose})
 

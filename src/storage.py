@@ -36,7 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_emails_tt ON emails(tt_number);
 CREATE TABLE IF NOT EXISTS drafts (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     tt_number           TEXT NOT NULL,
-    kind                TEXT NOT NULL,         -- reply | followup | reminder | escalation | closure_check
+    kind                TEXT NOT NULL,         -- reply | followup | reminder | escalation | closure_check | handoff
     level               INTEGER NOT NULL DEFAULT 1,
     to_addrs            TEXT NOT NULL,         -- JSON list
     cc_addrs            TEXT NOT NULL,         -- JSON list
@@ -63,7 +63,13 @@ CREATE TABLE IF NOT EXISTS ticket_state (
     last_escalation_at TEXT,
     last_status        TEXT,
     closed             INTEGER NOT NULL DEFAULT 0,
-    snoozed_until      TEXT                 -- no automated drafts before this (set when a draft is rejected)
+    snoozed_until      TEXT,                -- no automated drafts before this (set when a draft is rejected)
+    waiting_on_key     TEXT,                -- handover: team:<name> / person:<name> from escalation.yaml
+    waiting_on_label   TEXT,                -- handover: name as written in the email (also when not in contacts)
+    waiting_on_since   TEXT,
+    waiting_on_by      TEXT,                -- who told us (sender of that email)
+    handoff_contacted_at TEXT,              -- when we first emailed the new owner
+    last_group         TEXT                 -- Remedy assignment group last seen
 );
 
 CREATE TABLE IF NOT EXISTS meta (           -- small key/value store, e.g. inbox position
@@ -81,7 +87,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 """
 
-AUTO_KINDS = ("followup", "reminder", "escalation", "closure_check")
+AUTO_KINDS = ("followup", "reminder", "escalation", "closure_check", "handoff")
 
 
 class Storage:
@@ -97,8 +103,10 @@ class Storage:
             if "retry_after" not in cols:
                 c.execute("ALTER TABLE emails ADD COLUMN retry_after TEXT")
             tcols = {r["name"] for r in c.execute("PRAGMA table_info(ticket_state)")}
-            if "snoozed_until" not in tcols:
-                c.execute("ALTER TABLE ticket_state ADD COLUMN snoozed_until TEXT")
+            for col in ("snoozed_until", "waiting_on_key", "waiting_on_label", "waiting_on_since",
+                        "waiting_on_by", "handoff_contacted_at", "last_group"):
+                if col not in tcols:
+                    c.execute(f"ALTER TABLE ticket_state ADD COLUMN {col} TEXT")
 
     # ---- meta ----------------------------------------------------------------
     def get_meta(self, key: str) -> str | None:
